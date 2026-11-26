@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0b1220" media="(prefers-color-scheme: dark)">
+  <meta name="description" content="简洁的本地课程表小应用：课表网格与清单双视图，自动推荐连续排课时段，数据只保存在本设备。">
+  <title>我的课程</title>
+  <link rel="stylesheet" href="css/styles.css">
+  <!-- PWA：加到主屏后以独立窗口运行（需通过 http/https 打开，file:// 下浏览器会忽略） -->
+  <!-- manifest 由 js/app.js 在 http/https 下动态注入：
+       file:// 直接打开时浏览器会去拉 manifest 并抛 CORS 错误，污染控制台且无用 -->
+  <link rel="icon" href="assets/icons/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon-180.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="我的课程">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="format-detection" content="telephone=no">
+</head>
+<body data-view="grid">
+  <!-- ===== 内联图标精灵：全部使用 currentColor，自动跟随文字颜色与深色模式 ===== -->
+  <svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+    <symbol id="icon-plus" viewBox="0 0 24 24">
+      <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="icon-edit" viewBox="0 0 24 24">
+      <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12.5 20H21"/>
+        <path d="M16.6 3.6a2.2 2.2 0 0 1 3.1 3.1L7.4 19l-4.2 1 1-4.2L16.6 3.6Z"/>
+      </g>
+    </symbol>
+    <symbol id="icon-trash" viewBox="0 0 24 24">
+      <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3.5 6.5h17"/>
+        <path d="M9 6.5V4.6h6v1.9"/>
+        <path d="M18.4 6.5 17.5 20H6.5L5.6 6.5"/>
+        <path d="M10.2 10.6v5.4M13.8 10.6v5.4"/>
+      </g>
+    </symbol>
+    <symbol id="icon-clock" viewBox="0 0 24 24">
+      <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="8.6"/>
+        <path d="M12 7.2V12l3.2 2.1"/>
+      </g>
+    </symbol>
+    <symbol id="icon-pin" viewBox="0 0 24 24">
+      <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 21s6.8-6 6.8-10.6a6.8 6.8 0 1 0-13.6 0C5.2 15 12 21 12 21Z"/>
+        <circle cx="12" cy="10.2" r="2.4"/>
+      </g>
+    </symbol>
+    <symbol id="icon-user" viewBox="0 0 24 24">
+      <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="8" r="3.4"/>
+        <path d="M4.8 20a7.2 7.2 0 0 1 14.4 0"/>
+      </g>
+    </symbol>
+    <symbol id="icon-link" viewBox="0 0 24 24">
+      <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M10.4 13.6a3.9 3.9 0 0 0 5.5 0l2.4-2.4a3.9 3.9 0 0 0-5.5-5.5l-1.2 1.2"/>
+        <path d="M13.6 10.4a3.9 3.9 0 0 0-5.5 0l-2.4 2.4a3.9 3.9 0 0 0 5.5 5.5l1.2-1.2"/>
+      </g>
+    </symbol>
+    <symbol id="icon-close" viewBox="0 0 24 24">
+      <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="icon-camera" viewBox="0 0 24 24">
+      <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4.2 8.8h2.3l1.3-2.2h8.4l1.3 2.2h2.3a1.4 1.4 0 0 1 1.4 1.4v7.6a1.4 1.4 0 0 1-1.4 1.4H4.2a1.4 1.4 0 0 1-1.4-1.4v-7.6a1.4 1.4 0 0 1 1.4-1.4Z"/>
+        <circle cx="12" cy="13.6" r="3.2"/>
+      </g>
+    </symbol>
+    <symbol id="icon-calendar" viewBox="0 0 24 24">
+      <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3.6" y="5.4" width="16.8" height="15" rx="2.6"/>
+        <path d="M3.6 10.2h16.8M8.4 3.6v3.4M15.6 3.6v3.4"/>
+      </g>
+    </symbol>
+    <!-- 更多：三个点（次级工具收进菜单，保证顶栏只有两行） -->
+    <symbol id="icon-more" viewBox="0 0 24 24">
+      <g fill="currentColor">
+        <circle cx="5.4" cy="12" r="1.7"/>
+        <circle cx="12" cy="12" r="1.7"/>
+        <circle cx="18.6" cy="12" r="1.7"/>
+      </g>
+    </symbol>
+    <!-- 互换：两条反向箭头，表示「两个条目对调位置」 -->
+    <symbol id="icon-swap" viewBox="0 0 24 24">
+      <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3.8 8.8h13.4"/>
+        <path d="M13.6 5.1 17.7 8.8l-4.1 3.7"/>
+        <path d="M20.2 15.2H6.8"/>
+        <path d="M10.4 18.9 6.3 15.2l4.1-3.7"/>
+      </g>
+    </symbol>
+    <!-- 日志：带横线的记录本 -->
+    <symbol id="icon-log" viewBox="0 0 24 24">
+      <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="4.4" y="3.6" width="15.2" height="16.8" rx="2.4"/>
+        <path d="M8.2 8.4h7.6M8.2 12h7.6M8.2 15.6h4.6"/>
+      </g>
+    </symbol>
+    <!-- 颜色选中态的对勾 -->
+    <symbol id="icon-check" viewBox="0 0 24 24">
+      <path d="M5.4 12.6 9.8 17 18.6 6.9" fill="none" stroke="currentColor" stroke-width="2.6"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <!-- 「自动配色」：星点，表示由课名自动决定颜色 -->
+    <symbol id="icon-auto" viewBox="0 0 24 24">
+      <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M10.6 3.8 12.3 8l4.2 1.7-4.2 1.7-1.7 4.2-1.7-4.2L4.7 9.7 8.9 8l1.7-4.2Z"/>
+        <path d="M18 14.4l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8.8-2Z"/>
+      </g>
+    </symbol>
+    <!-- 日期条：前 / 后一天（与其它 symbol 同一套 1.8 stroke、round、24 网格） -->
+    <symbol id="icon-chevron-left" viewBox="0 0 24 24">
+      <path d="M14.4 5.6 8 12l6.4 6.4" fill="none" stroke="currentColor" stroke-width="1.8"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="icon-chevron-right" viewBox="0 0 24 24">
+      <path d="M9.6 5.6 16 12l-6.4 6.4" fill="none" stroke="currentColor" stroke-width="1.8"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <!-- 任务：带对勾的方框（空状态插画与勾选按钮共用同一语义） -->
+    <symbol id="icon-check-square" viewBox="0 0 24 24">
+      <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3.8" y="3.8" width="16.4" height="16.4" rx="4"/>
+        <path d="M8.2 12.4 11 15.2l5-6"/>
+      </g>
+    </symbol>
+    <!-- 显示设置：三条带滑块的横线 -->
+    <symbol id="icon-sliders" viewBox="0 0 24 24">
+      <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 7.2h6M14 7.2h6M4 12h10M18 12h2M4 16.8h3M11 16.8h9"/>
+        <circle cx="12" cy="7.2" r="2"/>
+        <circle cx="16" cy="12" r="2"/>
+        <circle cx="9" cy="16.8" r="2"/>
+      </g>
+    </symbol>
+    <!-- 行程：小行李箱 -->
+    <symbol id="icon-trip" viewBox="0 0 24 24">
+      <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3.4" y="7.2" width="17.2" height="12.6" rx="3"/>
+        <path d="M9 7.2V5.4a1.8 1.8 0 0 1 1.8-1.8h2.4A1.8 1.8 0 0 1 15 5.4v1.8"/>
+        <path d="M9.6 11v4.8M14.4 11v4.8"/>
+      </g>
+    </symbol>
+    <!-- 「铃声」：闹铃音选择（试听 / 选择 / 保存） -->
+    <symbol id="icon-bell" viewBox="0 0 24 24">
+      <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M18 9a6 6 0 1 0-12 0c0 4-1.6 5.4-2 6h16c-.4-.6-2-2-2-6Z"/>
+        <path d="M10.2 19a2 2 0 0 0 3.6 0"/>
+      </g>
+    </symbol>
+    <symbol id="icon-play" viewBox="0 0 24 24">
+      <path d="M9 7.2v9.6L17 12 9 7.2Z" fill="currentColor"/>
+    </symbol>
+    <symbol id="icon-stop" viewBox="0 0 24 24">
+      <rect x="8" y="8" width="8" height="8" rx="1.6" fill="currentColor"/>
+    </symbol>
+  </svg>
+
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <header class="app-header">
+    <div class="app-header__inner">
+      <div class="app-header__text">
+        <h1 class="app-header__title" id="app-title">我的课程</h1>
+        <p class="app-header__subtitle" id="course-summary">还没有课程</p>
+      </div>
+      <button type="button" class="btn btn--primary app-header__add" id="btn-add" aria-haspopup="dialog" aria-label="添加课程">
+        <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-plus"></use></svg>
+        <span class="app-header__add-label" id="btn-add-label">添加课程</span>
+      </button>
+    </div>
+
+    <!-- 栏目切换（4 个平级目的地）+ 主操作（拍照）+ 次级工具（收进「更多」）
+         4 个 tab 去掉图标 + padding 收到 8px，320px 下刚好塞进一行（见 styles.css ≤419px 块） -->
+    <div class="app-header__toolbar">
+      <div class="segmented" role="group" aria-label="切换栏目">
+        <button type="button" class="segmented__btn is-active" id="view-tab-grid" data-view="grid" aria-pressed="true">课表</button>
+        <button type="button" class="segmented__btn" id="view-tab-list" data-view="list" aria-pressed="false">清单</button>
+        <!-- 视觉用短名（320px 塞进一行），读屏用全称：旅游 / 当日任务 -->
+        <button type="button" class="segmented__btn" id="view-tab-trips" data-view="trips"
+                aria-pressed="false" aria-label="旅游">旅游</button>
+        <button type="button" class="segmented__btn" id="view-tab-tasks" data-view="tasks"
+                aria-pressed="false" aria-label="当日任务">任务</button>
+      </div>
+
+      <div class="app-header__tools">
+        <!-- 主行动：拍照导入（实心图标按钮，与「添加课程」并列，不进「更多」） -->
+        <button type="button" class="btn btn--camera" id="btn-camera"
+                aria-label="拍照导入课表" title="拍照导入课表">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-camera"></use></svg>
+        </button>
+        <button type="button" class="btn btn--ghost btn--sm" id="btn-more"
+                aria-haspopup="menu" aria-expanded="false" aria-controls="more-menu"
+                aria-label="更多工具" title="更多工具">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-more"></use></svg>
+          <span class="btn-label">更多</span>
+        </button>
+        <div class="more-menu" id="more-menu" role="menu" aria-label="更多工具" hidden>
+          <button type="button" class="more-menu__item" id="btn-today" role="menuitem" aria-label="回到今天" title="回到今天">
+            <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-calendar"></use></svg>
+            <span>今天</span>
+          </button>
+          <button type="button" class="more-menu__item" id="btn-swap" role="menuitem" aria-pressed="false"
+                  aria-label="互换" title="点两门课交换时间">
+            <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-swap"></use></svg>
+            <span>互换</span>
+          </button>
+          <button type="button" class="more-menu__item" id="btn-log" role="menuitem"
+                  aria-haspopup="dialog" aria-label="日志" title="日志">
+            <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-log"></use></svg>
+            <span>日志</span>
+          </button>
+          <!-- 显示设置：清单 / 旅游 / 任务三个列表栏目各自一套配置（按栏目 hidden 切换） -->
+          <button type="button" class="more-menu__item" id="btn-settings" role="menuitem"
+                  aria-haspopup="dialog" aria-label="显示设置" title="显示设置" hidden>
+            <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-sliders"></use></svg>
+            <span>显示设置</span>
+          </button>
+          <button type="button" class="more-menu__item" id="btn-ringtone" role="menuitem"
+                  aria-haspopup="dialog" aria-label="铃声" title="铃声">
+            <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-bell"></use></svg>
+            <span>铃声</span>
+          </button>
+          <!-- 通知权限：只有浏览器支持且尚未授权时出现（授权后由 JS 隐藏） -->
+          <button type="button" class="more-menu__item" id="btn-notify" role="menuitem"
+                  aria-label="开启系统通知" title="切到后台也能收到任务提醒" hidden>
+            <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-bell"></use></svg>
+            <span>开启通知</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 相机输入：必须在 click 事件里同步 .click()，否则 iOS 会丢掉用户手势而拒绝弹相机 -->
+    <input class="import-file" id="import-camera" type="file" accept="image/*" capture="environment"
+           aria-label="用相机拍摄课表">
+  </header>
+
+  <main class="app-main" id="main" tabindex="-1">
+    <p class="notice" id="storage-notice" role="status" hidden>
+      <span class="notice__text"></span>
+      <button type="button" class="notice__close" id="notice-close" aria-label="关闭提示">
+        <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg>
+      </button>
+    </p>
+
+    <!-- 排课助手：新增课程成功后出现，同一时刻只保留一条，不自动消失 -->
+    <section class="assistant" id="assistant-bar" role="status" aria-live="polite" hidden>
+      <p class="assistant__text" id="assistant-text"></p>
+      <div class="assistant__actions">
+        <button type="button" class="btn btn--primary btn--sm" id="assistant-continue">继续添加</button>
+        <button type="button" class="btn btn--ghost btn--sm" id="assistant-dismiss">不用了</button>
+      </div>
+    </section>
+
+    <!-- 今天信息条：打开即知「今天几节 / 下一节是什么」。仅课表视图且有课程时显示 -->
+    <button type="button" class="today-bar" id="today-bar" hidden>
+      <svg class="icon today-bar__icon" aria-hidden="true" focusable="false"><use href="#icon-clock"></use></svg>
+      <span class="today-bar__text" id="today-bar-text"></span>
+    </button>
+
+    <!-- 日期条：任务栏目使用（旅游栏目下一轮接入同一个控件）。
+         四种选区方式都生效：前一天 / 原生日期输入 / 后一天 /「今天」，筛选即时。
+         「今天」按钮仅在选中日期 ≠ 今天时出现（否则是空操作，白占 44px）。 -->
+    <div class="date-bar" id="date-bar" role="group" aria-label="选择日期" hidden>
+      <button type="button" class="btn btn--ghost date-bar__nav" id="date-prev" aria-label="前一天" title="前一天">
+        <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-chevron-left"></use></svg>
+      </button>
+      <input class="input input--date" id="date-input" type="date" aria-label="选择任务日期">
+      <button type="button" class="btn btn--ghost date-bar__nav" id="date-next" aria-label="后一天" title="后一天">
+        <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-chevron-right"></use></svg>
+      </button>
+      <button type="button" class="btn btn--ghost date-bar__action" id="date-today" aria-label="回到今天" title="回到今天" hidden>今天</button>
+      <!-- 旅游栏目的「全部」：清空日期筛选（任务栏目必须有日期，故只在旅游出现）。
+           与「今天」同一个位置槽位，两者互斥显示，保证 320px 下只多占 44px。 -->
+      <button type="button" class="btn btn--ghost date-bar__action" id="date-clear" aria-label="显示全部行程" title="显示全部行程" hidden>全部</button>
+    </div>
+
+    <!-- 空状态：首次打开（无任何数据）时展示。主 CTA 是拍照导入（核心能力第一步就可见） -->
+    <section class="empty-state" id="empty-state" aria-labelledby="empty-title">
+      <svg class="empty-state__art" viewBox="0 0 96 96" role="img" aria-label="空的课程表">
+        <rect x="12" y="21" width="72" height="62" rx="13" fill="none" stroke="currentColor" stroke-width="3" opacity=".42"/>
+        <path d="M12 38h72" stroke="currentColor" stroke-width="3" opacity=".42"/>
+        <path d="M30 21V12M66 21V12" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".42"/>
+        <path d="M28 53h21M28 66h13" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".42"/>
+        <circle cx="67" cy="60" r="17" fill="currentColor" opacity=".14"/>
+        <path d="M67 51.5v17M58.5 60h17" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/>
+      </svg>
+      <h2 class="empty-state__title" id="empty-title">还没有课程</h2>
+      <p class="empty-state__desc" id="empty-desc">
+        拍一张课表就能一次录入整周，也可以手动添加。课程数据只保存在这台设备上。
+      </p>
+      <button type="button" class="btn btn--primary empty-state__cta" id="btn-camera-empty">
+        <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-camera"></use></svg>
+        <span id="btn-camera-empty-label">拍课表导入</span>
+      </button>
+      <p class="empty-state__hint">
+        截图或拍照都行 · 识别需联网，图片会发给你自己配置的识别服务
+      </p>
+      <button type="button" class="btn btn--ghost empty-state__secondary" id="btn-add-empty" aria-haspopup="dialog">
+        <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-plus"></use></svg>
+        <span>手动添加</span>
+      </button>
+    </section>
+
+    <!-- 课表网格视图：结构由 app.js 通过 createElement 构建 -->
+    <section class="timetable-view" id="timetable-view" hidden aria-label="课表网格">
+      <div class="timetable" id="timetable" tabindex="-1" aria-label="课程表：纵向是节次，横向是星期"></div>
+      <section class="unscheduled" id="unscheduled" hidden aria-labelledby="unscheduled-title">
+        <h2 class="unscheduled__title" id="unscheduled-title">未设置时间</h2>
+        <p class="unscheduled__desc">这些课程还没有有效的开始 / 结束时间，无法放进课表。补全时间后会自动出现在网格里。</p>
+        <div class="course-list course-list--plain" id="unscheduled-list"></div>
+      </section>
+    </section>
+
+    <!-- 清单视图：按星期分组渲染 -->
+    <div class="course-list" id="course-list" tabindex="-1" hidden></div>
+
+    <!-- 当日任务栏目：微信联系人列表式行列表（分组头吸顶、行内勾选、整行点开编辑浮层） -->
+    <section class="section-view" id="tasks-view" tabindex="-1" aria-label="任务列表" hidden>
+      <ul class="section-list" id="tasks-list"></ul>
+      <section class="empty-state" id="tasks-empty" aria-labelledby="tasks-empty-title" hidden>
+        <svg class="empty-state__art" viewBox="0 0 96 96" role="img" aria-label="空的任务列表">
+          <rect x="16" y="14" width="64" height="72" rx="12" fill="none" stroke="currentColor" stroke-width="3" opacity=".42"/>
+          <path d="M30 34l4 4 6-7M30 52l4 4 6-7M30 70l4 4 6-7" fill="none" stroke="currentColor"
+                stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" opacity=".42"/>
+          <path d="M46 36h22M46 54h22M46 72h14" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".28"/>
+          <circle cx="72" cy="72" r="15" fill="currentColor" opacity=".14"/>
+          <path d="M72 65v14M65 72h14" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+        </svg>
+        <h2 class="empty-state__title" id="tasks-empty-title">今天还没有任务</h2>
+        <p class="empty-state__desc" id="tasks-empty-desc">
+          点右上角「添加任务」，或用上方日期条切换到其他日期。
+        </p>
+        <button type="button" class="btn btn--primary empty-state__cta" id="tasks-empty-add" aria-haspopup="dialog">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-plus"></use></svg>
+          <span>添加任务</span>
+        </button>
+        <p class="empty-state__hint">任务按日期归档，数据只保存在这台设备上。</p>
+      </section>
+    </section>
+
+    <!-- 旅游栏目：按出发月份分组 + 日期区间筛选 + 末尾「想法清单」 -->
+    <section class="section-view" id="trips-view" tabindex="-1" aria-label="行程列表" hidden>
+      <ul class="section-list" id="trips-list"></ul>
+      <section class="empty-state" id="trips-empty" aria-labelledby="trips-empty-title">
+        <svg class="empty-state__art" viewBox="0 0 96 96" role="img" aria-label="空的行程列表">
+          <rect x="14" y="30" width="68" height="48" rx="10" fill="none" stroke="currentColor" stroke-width="3" opacity=".42"/>
+          <path d="M36 30v-6a6 6 0 0 1 6-6h12a6 6 0 0 1 6 6v6" fill="none" stroke="currentColor"
+                stroke-width="3" stroke-linecap="round" opacity=".42"/>
+          <path d="M48 30v48" stroke="currentColor" stroke-width="3" opacity=".28"/>
+          <circle cx="72" cy="70" r="14" fill="currentColor" opacity=".14"/>
+          <path d="M72 63.5v13M65.5 70h13" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+        </svg>
+        <h2 class="empty-state__title" id="trips-empty-title">还没有行程</h2>
+        <p class="empty-state__desc" id="trips-empty-desc">
+          点右上角「添加行程」，按出发月份自动归档；还没定下来的可以先记成「想法」。
+        </p>
+        <button type="button" class="btn btn--primary empty-state__cta" id="trips-empty-add" aria-haspopup="dialog">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-plus"></use></svg>
+          <span id="trips-empty-add-label">添加第一个行程</span>
+        </button>
+        <p class="empty-state__hint" id="trips-empty-hint">行程数据只保存在这台设备上。</p>
+      </section>
+    </section>
+  </main>
+
+  <!-- ===== 互换模式吸底操作条（只在互换模式下出现） ===== -->
+  <div class="swap-bar" id="swap-bar" role="region" aria-label="互换操作条" hidden>
+    <p class="swap-bar__status" id="swap-bar-status">已选 0/2 · 点选两门课程</p>
+    <p class="swap-bar__detail" id="swap-bar-detail" hidden></p>
+    <div class="swap-bar__actions">
+      <button type="button" class="btn btn--ghost btn--sm" id="swap-exit">退出</button>
+      <!-- 不设原生 disabled：原生 disabled 不派发 click，「只选 1 门点确认要有提示」就走不到。
+           锁定态用 aria-disabled + .is-locked 表达，由 app.js 同步。 -->
+      <button type="button" class="btn btn--primary btn--sm is-locked" id="swap-confirm" aria-disabled="true">确认互换</button>
+    </div>
+  </div>
+
+  <!-- ===== 课程详情（点击课表块） ===== -->
+  <div class="overlay overlay--sheet" id="detail-overlay" hidden>
+    <div class="sheet" id="detail-sheet" role="dialog" aria-modal="true" aria-labelledby="detail-title">
+      <div class="sheet__grabber" aria-hidden="true"></div>
+      <div class="sheet__header">
+        <h2 class="sheet__title" id="detail-title">课程详情</h2>
+        <button type="button" class="icon-btn" id="detail-close" aria-label="关闭课程详情">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg>
+        </button>
+      </div>
+      <div class="sheet__body" id="detail-body"></div>
+      <div class="sheet__footer">
+        <button type="button" class="btn btn--danger-ghost" id="detail-delete">删除</button>
+        <button type="button" class="btn btn--primary" id="detail-edit">编辑</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 新增 / 编辑课程：底部弹出面板（桌面端居中弹窗） ===== -->
+  <div class="overlay overlay--sheet" id="form-overlay" hidden>
+    <div class="sheet" id="form-sheet" role="dialog" aria-modal="true" aria-labelledby="form-title">
+      <div class="sheet__grabber" aria-hidden="true"></div>
+      <div class="sheet__header">
+        <h2 class="sheet__title" id="form-title">添加课程</h2>
+        <button type="button" class="icon-btn" id="form-close" aria-label="关闭">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg>
+        </button>
+      </div>
+
+      <form class="sheet__form" id="course-form" novalidate>
+        <div class="sheet__body">
+          <div class="field">
+            <label class="field__label" for="field-name">课程名称<span class="field__required" aria-hidden="true">*</span></label>
+            <input class="input" id="field-name" name="name" type="text" autocomplete="off" autocapitalize="off"
+                   spellcheck="false" placeholder="例如：高等数学" enterkeyhint="next" aria-describedby="error-name">
+            <p class="field__error" id="error-name"></p>
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="field-weekday">星期</label>
+            <select class="input input--select" id="field-weekday" name="weekday">
+              <option value="1">周一</option>
+              <option value="2">周二</option>
+              <option value="3">周三</option>
+              <option value="4">周四</option>
+              <option value="5">周五</option>
+              <option value="6">周六</option>
+              <option value="7">周日</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <span class="field__label" id="label-time">上课时间<span class="field__required" aria-hidden="true">*</span></span>
+            <div class="time-row" role="group" aria-labelledby="label-time">
+              <div class="time-row__cell">
+                <label class="time-row__label" for="field-start">开始</label>
+                <input class="input" id="field-start" name="startTime" type="time" aria-describedby="error-time">
+              </div>
+              <div class="time-row__cell">
+                <label class="time-row__label" for="field-end">结束</label>
+                <input class="input" id="field-end" name="endTime" type="time" aria-describedby="error-time">
+              </div>
+            </div>
+            <p class="field__error" id="error-time"></p>
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="field-teacher">教师</label>
+            <input class="input" id="field-teacher" name="teacher" type="text" autocomplete="off"
+                   placeholder="选填，例如：张老师">
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="field-place">地点或链接</label>
+            <input class="input" id="field-place" name="place" type="text" autocomplete="off" autocapitalize="off"
+                   spellcheck="false" placeholder="选填，例如：教学楼 A301 或会议链接">
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="field-note">备注</label>
+            <textarea class="input input--textarea" id="field-note" name="note" rows="3"
+                      placeholder="选填，例如：需要带计算器" maxlength="500" aria-describedby="note-counter"></textarea>
+            <div class="note-meta">
+              <span class="note-meta__counter" id="note-counter">0 / 500</span>
+            </div>
+          </div>
+
+          <!-- 颜色：选项由 app.js 按 COURSE_COLORS 构建（radio + 色块，保证键盘可达） -->
+          <div class="field field--color">
+            <span class="field__label" id="label-color">颜色</span>
+            <div class="color-picker" id="color-picker" role="radiogroup"
+                 aria-labelledby="label-color" aria-describedby="color-hint"></div>
+            <p class="color-picker__hint" id="color-hint">默认按课名自动配色，同一门课永远是同一种颜色。</p>
+          </div>
+
+          <!-- 图片识别导入入口（预留接缝，识别逻辑全部在 import-service.js） -->
+          <div class="form-import">
+            <button type="button" class="btn btn--ghost form-import__btn" id="form-import" aria-haspopup="dialog">
+              <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-camera"></use></svg>
+              <span>拍照导入课表</span>
+            </button>
+            <p class="form-import__hint">拍照或上传课表截图可一次录入多门课程；首次使用需在导入面板里配置一次识别服务。</p>
+          </div>
+        </div>
+
+        <div class="sheet__footer">
+          <button type="button" class="btn btn--ghost" id="form-cancel">取消</button>
+          <button type="submit" class="btn btn--primary" id="form-save">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===== 新增 / 编辑任务（旅游下一轮复用同一个表单，用 data-mode 切换字段） =====
+       刻意不复用 #course-form：课程表单的状态机（editingId / 排课助手 / 颜色）全是课程专属，
+       复用会把"正在编辑的任务 id"塞进课程状态。CSS 与浮层基础设施则 100% 复用。 -->
+  <div class="overlay overlay--sheet" id="item-overlay" hidden>
+    <div class="sheet" id="item-sheet" role="dialog" aria-modal="true" aria-labelledby="item-title">
+      <div class="sheet__grabber" aria-hidden="true"></div>
+      <div class="sheet__header">
+        <h2 class="sheet__title" id="item-title">添加任务</h2>
+        <button type="button" class="icon-btn" id="item-close" aria-label="关闭">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg>
+        </button>
+      </div>
+
+      <form class="sheet__form" id="item-form" data-mode="task" novalidate>
+        <div class="sheet__body">
+          <div class="field">
+            <label class="field__label" for="item-field-title"><span id="item-title-label">标题</span><span class="field__required" aria-hidden="true">*</span></label>
+            <input class="input" id="item-field-title" name="title" type="text" autocomplete="off"
+                   autocapitalize="off" spellcheck="false" maxlength="80" placeholder="例如：交课程设计"
+                   enterkeyhint="next" aria-describedby="item-error-title">
+            <p class="field__error" id="item-error-title"></p>
+          </div>
+
+          <!-- 任务：单日日期（data-mode="trip" 时隐藏） -->
+          <div class="field field--task">
+            <label class="field__label" for="item-field-date">日期<span class="field__required" aria-hidden="true">*</span></label>
+            <input class="input input--date" id="item-field-date" name="date" type="date" aria-describedby="item-error-date">
+            <p class="field__error" id="item-error-date"></p>
+          </div>
+
+          <!-- 行程：目的地 / 出发-结束日期 / 状态（data-mode="task" 时全部隐藏） -->
+          <div class="field field--trip">
+            <label class="field__label" for="item-field-destination">目的地</label>
+            <input class="input" id="item-field-destination" name="destination" type="text" autocomplete="off"
+                   autocapitalize="off" spellcheck="false" maxlength="60" placeholder="选填，例如：江西 婺源">
+          </div>
+
+          <div class="field field--trip">
+            <span class="field__label" id="item-trip-date-label">行程日期<span class="field__required" aria-hidden="true">*</span></span>
+            <div class="time-row" role="group" aria-labelledby="item-trip-date-label">
+              <div class="time-row__cell">
+                <label class="time-row__label" for="item-field-start-date">出发</label>
+                <input class="input input--date" id="item-field-start-date" name="startDate" type="date"
+                       aria-describedby="item-error-trip-date">
+              </div>
+              <div class="time-row__cell">
+                <label class="time-row__label" for="item-field-end-date">结束</label>
+                <input class="input input--date" id="item-field-end-date" name="endDate" type="date"
+                       aria-describedby="item-error-trip-date">
+              </div>
+            </div>
+            <p class="field__error" id="item-error-trip-date"></p>
+          </div>
+
+          <div class="field field--trip">
+            <label class="field__label" for="item-field-status">状态</label>
+            <select class="input input--select" id="item-field-status" name="status">
+              <option value="planned">计划中</option>
+              <option value="idea">想法</option>
+              <option value="done">已完成</option>
+            </select>
+          </div>
+
+          <!-- 任务：时间段（data-mode="trip" 时隐藏） -->
+          <div class="field field--task">
+            <span class="field__label" id="item-time-label">时间（选填）</span>
+            <div class="time-row" role="group" aria-labelledby="item-time-label">
+              <div class="time-row__cell">
+                <label class="time-row__label" for="item-field-start">开始</label>
+                <input class="input" id="item-field-start" name="startTime" type="time" aria-describedby="item-error-time">
+              </div>
+              <div class="time-row__cell">
+                <label class="time-row__label" for="item-field-end">结束</label>
+                <input class="input" id="item-field-end" name="endTime" type="time" aria-describedby="item-error-time">
+              </div>
+            </div>
+            <p class="field__error" id="item-error-time"></p>
+          </div>
+
+          <!-- 任务：提醒（data-mode="trip" 时隐藏）。没有开始时间时由 JS 置灰 -->
+          <div class="field field--task">
+            <label class="field__label" for="item-field-remind">提醒</label>
+            <select class="input input--select" id="item-field-remind" name="remindMinutes"
+                    aria-describedby="item-error-remind">
+              <option value="">不提醒</option>
+              <option value="0">准时</option>
+              <option value="5">提前 5 分钟</option>
+              <option value="10">提前 10 分钟</option>
+            </select>
+            <p class="field__hint" id="item-remind-hint">提醒在应用打开时生效，到点响所选铃声。</p>
+            <p class="field__error" id="item-error-remind"></p>
+          </div>
+
+          <div class="field">
+            <label class="field__label" for="item-field-note">备注</label>
+            <textarea class="input input--textarea" id="item-field-note" name="note" rows="3"
+                      placeholder="选填，例如：打印 2 份" maxlength="500" aria-describedby="item-note-counter"></textarea>
+            <div class="note-meta">
+              <span class="note-meta__counter" id="item-note-counter">0 / 500</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="sheet__footer">
+          <button type="button" class="btn btn--danger-ghost" id="item-delete" hidden>删除任务</button>
+          <button type="button" class="btn btn--ghost" id="item-cancel">取消</button>
+          <button type="submit" class="btn btn--primary" id="item-save">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===== 显示设置（清单 / 旅游 / 任务 各一套，配置独立持久化） =====
+       开关行全部由 app.js 用 createElement 构建：每个开关是 role="checkbox" 的整行按钮（≥44 高），
+       布局是 role="radiogroup" 的两个按钮，不引入任何第三方控件。 -->
+  <div class="overlay overlay--sheet" id="display-overlay" hidden>
+    <div class="sheet sheet--settings" id="display-sheet" role="dialog" aria-modal="true"
+         aria-labelledby="display-title">
+      <div class="sheet__grabber" aria-hidden="true"></div>
+      <div class="sheet__header">
+        <h2 class="sheet__title" id="display-title">显示设置</h2>
+        <button type="button" class="icon-btn" id="display-close" aria-label="关闭显示设置">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg>
+        </button>
+      </div>
+      <div class="sheet__body">
+        <p class="display-note" id="display-note">只影响当前栏目，三个栏目的设置互不影响。</p>
+        <div class="settings" id="display-settings"></div>
+      </div>
+      <div class="sheet__footer">
+        <button type="button" class="btn btn--ghost" id="display-done">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 图片识别导入 ===== -->
+  <div class="overlay overlay--sheet" id="import-overlay" hidden>
+    <div class="sheet sheet--import" id="import-sheet" role="dialog" aria-modal="true" aria-labelledby="import-title">
+      <div class="sheet__grabber" aria-hidden="true"></div>
+      <div class="sheet__header">
+        <h2 class="sheet__title" id="import-title">拍照导入课表</h2>
+        <button type="button" class="icon-btn" id="import-close" aria-label="关闭图片导入">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg>
+        </button>
+      </div>
+
+      <div class="sheet__body">
+        <p class="import-note">
+          支持 PNG / JPG，最多 9 张，单张不超过 5 MB。识别需要联网：图片会发送给你配置的识别服务商，
+          识别结果会先让你逐条确认，再批量入库。
+        </p>
+
+        <!-- 识别服务设置：逻辑全部在 import-service.js，此处只放结构 -->
+        <details class="import-config" id="import-config">
+          <summary class="import-config__summary">
+            <span class="import-config__title">识别服务设置</span>
+            <span class="import-config__state" id="import-config-state">未配置</span>
+          </summary>
+          <div class="import-config__body">
+            <p class="import-config__hint">
+              需填写一个兼容 OpenAI Chat Completions 的视觉模型接口。API Key 只保存在本机浏览器，不会上传到别处；
+              识别时图片会发送给你选择的这家服务商。
+            </p>
+            <div class="field">
+              <label class="field__label" for="vision-provider">服务商</label>
+              <select class="input input--select" id="vision-provider">
+                <option value="qwen">通义千问（阿里云百炼）</option>
+                <option value="zhipu">智谱 GLM</option>
+                <option value="ark">豆包（火山方舟）</option>
+                <option value="openai">OpenAI</option>
+                <option value="custom">自定义（OpenAI 兼容）</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="field__label" for="vision-base">接口地址</label>
+              <input class="input" id="vision-base" type="url" autocomplete="off" autocapitalize="off"
+                     spellcheck="false" placeholder="https://…/v1">
+            </div>
+            <div class="field">
+              <label class="field__label" for="vision-model">模型名称</label>
+              <input class="input" id="vision-model" type="text" autocomplete="off" autocapitalize="off"
+                     spellcheck="false" placeholder="例如 qwen-vl-max-latest">
+            </div>
+            <div class="field">
+              <label class="field__label" for="vision-key">API Key</label>
+              <input class="input" id="vision-key" type="password" autocomplete="off" autocapitalize="off"
+                     spellcheck="false" placeholder="sk-…">
+            </div>
+            <div class="import-config__actions">
+              <button type="button" class="btn btn--ghost btn--sm" id="vision-test">测试连接</button>
+              <button type="button" class="btn btn--primary btn--sm" id="vision-save">保存</button>
+              <button type="button" class="btn btn--ghost btn--sm" id="vision-clear">清除</button>
+            </div>
+            <p class="import-config__result" id="vision-result" role="status"></p>
+            <p class="import-config__privacy">
+              课表截图可能含姓名、学号等个人信息，建议先裁掉或遮挡再上传。
+              隐私最优路径：服务商选「自定义」，接口地址指向本机 Ollama / LM Studio 的 OpenAI 兼容端点。
+            </p>
+          </div>
+        </details>
+
+        <div class="dropzone" id="import-dropzone">
+          <svg class="dropzone__icon" aria-hidden="true" focusable="false"><use href="#icon-camera"></use></svg>
+          <p class="dropzone__title">还没有选择图片</p>
+          <p class="dropzone__desc">拍一张或从相册选一张课表，识别后可批量导入。</p>
+          <div class="dropzone__actions">
+            <button type="button" class="btn btn--primary btn--sm dropzone__btn" id="import-camera-pick">
+              <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-camera"></use></svg>
+              <span>拍照</span>
+            </button>
+            <button type="button" class="btn btn--ghost btn--sm dropzone__btn" id="import-pick">从相册选</button>
+          </div>
+        </div>
+        <input class="import-file" id="import-file" type="file" accept="image/*" multiple>
+
+        <!-- 数据流向：常驻小字，不藏在设置里 -->
+        <details class="import-dataflow">
+          <summary class="import-dataflow__summary">图片只会发给你自己配置的服务商 · 点此查看数据流向</summary>
+          <div class="import-dataflow__body">
+            <p>相册 / 相机 →（File API，本地）→ 浏览器内存 →（canvas 重绘：丢弃 EXIF，含 GPS、机型、时间）→ 缩放并转 JPEG →（https）→ 你配置的视觉模型服务商。</p>
+            <p>服务商侧的留存策略由服务商决定，本应用无法控制。API Key 与课程数据都只存在本机 localStorage（明文）。</p>
+            <p>成本提示：每张图调用 1 次，约 2.6k–4.4k tokens；拍照档位长边 2000px 会比截图多花一些 token。</p>
+          </div>
+        </details>
+
+        <ul class="thumbs" id="import-thumbs" hidden aria-label="已选图片"></ul>
+
+        <p class="import-status" id="import-status" role="status" aria-live="polite"></p>
+
+        <div class="import-run" id="import-run" hidden>
+          <button type="button" class="btn btn--ghost btn--sm" id="import-cancel-run">取消识别</button>
+        </div>
+
+        <ul class="import-warnings" id="import-warnings" hidden aria-label="识别警告"></ul>
+
+        <!-- 批量操作条：对选中项统一改星期 / 节次 -->
+        <div class="import-bulk" id="import-bulk" hidden>
+          <p class="import-bulk__title" id="import-bulk-title">已选 0 条</p>
+          <div class="import-bulk__row">
+            <button type="button" class="btn btn--ghost btn--sm" id="import-bulk-all">全选</button>
+            <button type="button" class="btn btn--ghost btn--sm" id="import-bulk-none">全不选</button>
+          </div>
+          <div class="import-bulk__row">
+            <label class="import-bulk__label" for="import-bulk-weekday">统一改星期</label>
+            <select class="input input--select" id="import-bulk-weekday">
+              <option value="">不改</option>
+              <option value="1">周一</option>
+              <option value="2">周二</option>
+              <option value="3">周三</option>
+              <option value="4">周四</option>
+              <option value="5">周五</option>
+              <option value="6">周六</option>
+              <option value="7">周日</option>
+            </select>
+          </div>
+          <div class="import-bulk__row">
+            <label class="import-bulk__label" for="import-bulk-period-start">统一改节次</label>
+            <select class="input input--select" id="import-bulk-period-start">
+              <option value="">起始节</option>
+            </select>
+            <select class="input input--select" id="import-bulk-period-end">
+              <option value="">结束节</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="candidates" id="import-candidates" hidden></div>
+      </div>
+
+      <div class="sheet__footer">
+        <button type="button" class="btn btn--ghost" id="import-cancel">取消</button>
+        <button type="button" class="btn btn--primary" id="import-confirm" disabled>确认导入</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 工作日志（互换记录） ===== -->
+  <div class="overlay overlay--sheet" id="log-overlay" hidden>
+    <div class="sheet" id="log-sheet" role="dialog" aria-modal="true" aria-labelledby="log-title">
+      <div class="sheet__grabber" aria-hidden="true"></div>
+      <div class="sheet__header">
+        <h2 class="sheet__title" id="log-title">工作日志</h2>
+        <button type="button" class="icon-btn" id="log-close" aria-label="关闭工作日志">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg>
+        </button>
+      </div>
+      <div class="sheet__body">
+        <p class="log-subtitle" id="log-count">共 0 条记录</p>
+        <p class="log-notice" id="log-notice" hidden></p>
+        <p class="log-empty" id="log-empty">
+          还没有记录。完成一次课表互换后，记录会出现在这里。
+        </p>
+        <div class="log-groups" id="log-groups"></div>
+      </div>
+      <div class="sheet__footer">
+        <button type="button" class="btn btn--danger-ghost" id="log-clear">清空日志</button>
+        <button type="button" class="btn btn--ghost" id="log-done">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 轻量确认框（删除 / 放弃修改 / 互换 / 清空日志） ===== -->
+  <div class="overlay overlay--center" id="confirm-overlay" hidden>
+    <div class="dialog" id="confirm-dialog" role="dialog" aria-modal="true"
+         aria-labelledby="confirm-title" aria-describedby="confirm-message">
+      <h2 class="dialog__title" id="confirm-title">删除课程</h2>
+      <p class="dialog__message" id="confirm-message"></p>
+      <div class="dialog__actions">
+        <button type="button" class="btn btn--ghost" id="confirm-cancel">取消</button>
+        <button type="button" class="btn btn--primary" id="confirm-ok">删除</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 撤销提示 ===== -->
+  <div class="toast" id="undo-toast" hidden>
+    <span class="toast__text" id="undo-toast-text"></span>
+    <button type="button" class="toast__action" id="undo-button">撤销</button>
+  </div>
+
+  <p class="sr-only" id="live-region" role="status" aria-live="polite"></p>
+
+
+  <!-- ===== 铃声设置：列表 / 试听 / 选择 / 保存（参考闹钟的选铃声界面） ===== -->
+  <div class="overlay overlay--sheet" id="ringtone-overlay" hidden>
+    <div class="sheet sheet--ringtone" id="ringtone-sheet" role="dialog" aria-modal="true"
+         aria-labelledby="ringtone-title">
+      <div class="sheet__grabber" aria-hidden="true"></div>
+      <div class="sheet__header">
+        <h2 class="sheet__title" id="ringtone-title">铃声</h2>
+        <button type="button" class="icon-btn" id="ringtone-close" aria-label="关闭铃声设置">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg>
+        </button>
+      </div>
+      <div class="sheet__body">
+        <div class="ringtone-current" id="ringtone-current">
+          <span class="ringtone-current__label">当前铃声</span>
+          <span class="ringtone-current__name" id="ringtone-current-name">经典铃音</span>
+          <button type="button" class="btn btn--ghost btn--sm ringtone-current__play" id="ringtone-current-play">
+            <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-play"></use></svg>
+            <span>试听</span>
+          </button>
+        </div>
+        <ul class="ringtone-list" id="ringtone-list" role="radiogroup" aria-label="铃声列表"></ul>
+        <p class="ringtone-hint" id="ringtone-hint">
+          点「试听」立即播放，选好后点「保存」生效；设置保存在这台设备上。铃声为实时合成，不占用存储空间。
+        </p>
+      </div>
+      <div class="sheet__footer">
+        <button type="button" class="btn btn--ghost" id="ringtone-cancel">取消</button>
+        <button type="button" class="btn btn--primary" id="ringtone-save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 任务提醒：到点弹出的卡片（role=alert，不抢焦点，避免打断正在输入的用户） -->
+  <div class="reminder-stack" id="reminder-stack" aria-live="assertive" aria-atomic="false"></div>
+
+  <noscript>
+    <p class="noscript-warning">本应用需要启用 JavaScript 才能使用。</p>
+  </noscript>
+
+  <script src="js/timetable.js" defer></script>
+  <script src="js/import-service.js" defer></script>
+  <script src="js/swap-log.js" defer></script>
+  <script src="js/sections.js" defer></script>
+  <script src="js/ringtone.js" defer></script>
+  <script src="js/app.js" defer></script>
+</body>
+</html>
