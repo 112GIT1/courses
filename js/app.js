@@ -103,6 +103,8 @@
 
   /* ---- 栏目数据层：统一从 sections.js 读取（解析期取走，与上面 TT 同款约定） ---- */
   var SEC = window.CourseSections || {};
+  /* ---- 课程目录：只读静态数据 + 判重/过滤纯函数（catalog.js） ---- */
+  var CAT = window.CourseCatalog || {};
   /** 4 个平级栏目，顺序 = 分段控件里的顺序 */
   var VIEWS = ['grid', 'list', 'trips', 'tasks'];
   /** 栏目 → 顶栏标题 */
@@ -275,6 +277,22 @@
   var colorPickerEl = null;
   var errorNameEl = null;
   var errorTimeEl = null;
+
+  /* ---- 课程目录浮层（勾选批量添加） ---- */
+  var catalogOverlayEl = null;
+  var catalogSheetEl = null;
+  var catalogFooterEl = null;
+  var catalogCloseEl = null;
+  var catalogManualEl = null;
+  var catalogStatsEl = null;
+  var catalogSearchEl = null;
+  var catalogChipsEl = null;
+  var catalogListEl = null;
+  var catalogEmptyEl = null;
+  var catalogCountEl = null;
+  var catalogClearEl = null;
+  var catalogAddEl = null;
+  var catalogStatusEl = null;
 
   var importOverlayEl = null;
   var importSheetEl = null;
@@ -474,6 +492,26 @@
   var logOpenedAt = 0;
   /** 视口变化后重测操作条高度的定时器 */
   var swapMetricsTimerId = null;
+
+  /** 课程目录浮层的临时状态（纯 UI，不落库） */
+  var catalogState = {
+    /** @type {string} 搜索关键词（即时过滤） */
+    query: '',
+    /** @type {string} 当前分类，'全部' 表示不过滤 */
+    category: '全部',
+    /** @type {Object<string, boolean>} 已勾选的目录 id */
+    selected: {},
+    /** @type {Object<string, boolean>} 已有课程的判重键集合（打开 / 提交前重建） */
+    keys: {},
+    /** @type {Object<string, HTMLElement>} 目录 id → 行元素（就地更新用） */
+    rowEls: {},
+    /** @type {HTMLElement|null} 打开浮层前的焦点元素 */
+    trigger: null,
+    /** 提交中守卫：防止连点造成两次写入 */
+    busy: false,
+    /** 浮层最近一次打开的时间戳（遮罩误触守卫） */
+    openedAt: 0
+  };
 
   /** 图片导入面板的临时状态 */
   var importState = {
@@ -3093,6 +3131,7 @@
       itemOverlayEl,
       displayOverlayEl,
       ringtoneOverlayEl,
+      catalogOverlayEl,
       importOverlayEl,
       logOverlayEl,
       confirmOverlayEl
@@ -3215,6 +3254,7 @@
       itemOverlayEl,
       displayOverlayEl,
       ringtoneOverlayEl,
+      catalogOverlayEl,
       importOverlayEl,
       logOverlayEl,
       confirmOverlayEl
@@ -4331,6 +4371,10 @@
     }
     if (pendingUndo.type === 'import-batch') {
       undoImportBatch();
+      return;
+    }
+    if (pendingUndo.type === 'catalog-add') {
+      undoCatalogAdd();
       return;
     }
     if (pendingUndo.type === 'task-delete') {
@@ -5636,6 +5680,15 @@
     clearUndo();
     render();
     hideUndoToast();
+    // 课程目录浮层若开着（10 秒内又打开的情况），行状态要跟着回退，
+    // 否则会出现「库里已经没有了，行还写着已添加」的自相矛盾。
+    if (catalogOverlayEl && catalogOverlayEl.classList.contains('is-open')) {
+      syncCatalogAfterExternalChange();
+      announce('已撤销本次导入，共 ' + removed + ' 门');
+      // 焦点留在浮层里，不能还给已被遮住的顶栏按钮
+      safeFocus(catalogSearchEl || catalogListEl);
+      return;
+    }
     announce('已撤销本次导入，共 ' + removed + ' 门');
     // 撤销后不能把焦点丢在 body 上（toast 里的按钮随即隐藏）
     safeFocus(btnCameraEl || btnAddEl);
@@ -8812,6 +8865,806 @@
     return persistSectionConfig(patch);
   }
 
+  /* ==================== 十八·G、课程目录（勾选批量添加） ==================== */
+
+  /**
+   * 当前目录的判重键集合（每次打开 / 每次提交前重建一次）。
+   * 不缓存到 state 里：目录是只读视图，不需要参与持久化。
+   * @return {Object<string, boolean>}
+   */
+  function buildCatalogKeys() {
+    return CAT.buildKeySet(state.courses);
+  }
+
+  /**
+   * 课程被外部改动后（另一个标签页写库、整批撤销），把目录浮层拉回一致状态。
+   * 做三件事：重建判重键 → 撤掉「已被别处加过」的勾选 → 整表重渲染（行状态 / 统计 / 计数）。
+   * 浮层没开着就什么都不做（目录是纯视图，不需要维护）。
+   */
+  function syncCatalogAfterExternalChange() {
+    if (!catalogOverlayEl || !catalogOverlayEl.classList.contains('is-open')) {
+      return;
+    }
+    if (!Array.isArray(CAT.CATALOG)) {
+      return;
+    }
+    catalogState.keys = buildCatalogKeys();
+    var ids = selectedCatalogIds();
+    for (var i = 0; i < ids.length; i += 1) {
+      var entry = CAT.findEntry(ids[i]);
+      if (entry && CAT.isDuplicate(entry, catalogState.keys)) {
+        // 别处已经加过了：勾选作废，重渲染后这一行会显示「已添加」
+        delete catalogState.selected[ids[i]];
+      }
+    }
+    renderCatalog();
+  }
+
+  /**
+   * 目录顶部的统计文案：「共 N 门 · 已添加 M 门」。
+   */
+  function renderCatalogStats() {
+    if (!catalogStatsEl) {
+      return;
+    }
+    var total = CAT.CATALOG.length;
+    var added = CAT.countAdded(CAT.CATALOG, catalogState.keys);
+    catalogStatsEl.textContent = '共 ' + total + ' 门 · 已添加 ' + added + ' 门';
+  }
+
+  /**
+   * 建一次分类 chips（含「全部」）。只建一次，之后只切 aria-pressed，
+   * 这样点 chip 时焦点不会被重建的 DOM 抢走。
+   */
+  function buildCatalogChips() {
+    if (!catalogChipsEl || catalogChipsEl.childNodes.length > 0) {
+      return;
+    }
+    var labels = [CAT.CATEGORY_ALL].concat(CAT.CATEGORIES);
+    for (var i = 0; i < labels.length; i += 1) {
+      var chip = createEl('button', 'chip', labels[i]);
+      chip.type = 'button';
+      chip.setAttribute('data-category', labels[i]);
+      chip.setAttribute('aria-pressed', 'false');
+      catalogChipsEl.appendChild(chip);
+    }
+  }
+
+  /**
+   * 同步 chips 的选中态。
+   */
+  function renderCatalogChips() {
+    if (!catalogChipsEl) {
+      return;
+    }
+    var chips = catalogChipsEl.querySelectorAll('[data-category]');
+    for (var i = 0; i < chips.length; i += 1) {
+      var value = chips[i].getAttribute('data-category');
+      chips[i].setAttribute('aria-pressed', String(value === catalogState.category));
+    }
+  }
+
+  /**
+   * 目录条目的时间文案（「周三 08:30–10:00」）。
+   * 星期取本文件唯一的 WEEKDAY_LABELS，时段复用 formatTimeRange ——
+   * 全应用只有一份时间格式，目录不另造一套。
+   * @param {Object} entry
+   * @return {string}
+   */
+  function formatCatalogTime(entry) {
+    if (!entry || typeof entry !== 'object') {
+      return '';
+    }
+    var weekday = WEEKDAY_LABELS[clampWeekday(entry.weekday) - 1];
+    var range = formatTimeRange(entry);
+    return range ? weekday + ' ' + range : weekday;
+  }
+
+  /**
+   * 目录行的无障碍名称：把「名称 / 分类 / 时间 / 状态」一次读全。
+   * @param {Object} entry
+   * @param {string} stateText '已添加' / '已选' / ''
+   * @return {string}
+   */
+  function buildCatalogRowAria(entry, stateText) {
+    var parts = [
+      entry.name,
+      entry.category,
+      formatCatalogTime(entry),
+      entry.teacher + ' ' + entry.place
+    ];
+    if (stateText) {
+      parts.push(stateText);
+    }
+    return parts.join('，');
+  }
+
+  /**
+   * 设置目录行右侧徽标。
+   * @param {HTMLElement} rowEl
+   * @param {string} text '' 表示隐藏
+   */
+  function setCatalogBadge(rowEl, text) {
+    if (!rowEl) {
+      return;
+    }
+    var badge = rowEl.querySelector('.catalog-row__badge');
+    if (!badge) {
+      return;
+    }
+    badge.textContent = text;
+    badge.hidden = !text;
+  }
+
+  /**
+   * 构建一行目录条目。
+   * @param {Object} entry
+   * @return {HTMLLIElement}
+   */
+  function createCatalogRow(entry) {
+    var added = CAT.isDuplicate(entry, catalogState.keys);
+    var selected = Boolean(catalogState.selected[entry.id]);
+    var stateText = added ? '已添加' : selected ? '已选' : '';
+
+    var li = createEl('li', 'catalog-row');
+    if (added) {
+      li.classList.add('is-added');
+    } else if (selected) {
+      li.classList.add('is-selected');
+    }
+
+    // 勾选行本身是 role="checkbox" 的自定义控件：
+    // Tab 可停、空格切换、Enter 提交；已添加的行退化为不可勾选（tabindex=-1 + aria-disabled）。
+    var row = createEl('div', 'catalog-row__pick');
+    row.setAttribute('role', 'checkbox');
+    row.setAttribute('aria-checked', selected ? 'true' : 'false');
+    row.setAttribute('tabindex', added ? '-1' : '0');
+    row.setAttribute('data-catalog-id', entry.id);
+    row.setAttribute('aria-label', buildCatalogRowAria(entry, stateText));
+    if (added) {
+      row.setAttribute('aria-disabled', 'true');
+    }
+
+    var box = createEl('span', 'catalog-row__box');
+    box.setAttribute('aria-hidden', 'true');
+    box.appendChild(createIcon('icon-check'));
+
+    var body = createEl('span', 'catalog-row__body');
+    var titleLine = createEl('span', 'catalog-row__titleline');
+    titleLine.appendChild(createEl('span', 'catalog-row__name', entry.name));
+    titleLine.appendChild(createEl('span', 'catalog-row__cat', entry.category));
+    var badge = createEl('span', 'catalog-row__badge', stateText);
+    badge.hidden = !stateText;
+    titleLine.appendChild(badge);
+    body.appendChild(titleLine);
+    body.appendChild(createEl('span', 'catalog-row__intro', entry.intro));
+    body.appendChild(
+      createEl('span', 'catalog-row__meta', formatCatalogTime(entry))
+    );
+    body.appendChild(createEl('span', 'catalog-row__meta', entry.teacher + ' · ' + entry.place));
+
+    row.appendChild(box);
+    row.appendChild(body);
+    li.appendChild(row);
+    return li;
+  }
+
+  /**
+   * 渲染目录列表（搜索 / 分类变化时整体重建，此时焦点在搜索框或 chip 上，不受影响）。
+   */
+  function renderCatalogList() {
+    if (!catalogListEl) {
+      return;
+    }
+    var entries = CAT.filterEntries(CAT.CATALOG, {
+      query: catalogState.query,
+      category: catalogState.category
+    });
+    catalogListEl.textContent = '';
+    catalogState.rowEls = {};
+
+    if (entries.length === 0) {
+      if (catalogEmptyEl) {
+        if (catalogState.query) {
+          catalogEmptyEl.textContent =
+            '没有找到与「' + catalogState.query + '」匹配的课程，换个关键词试试。';
+        } else if (catalogState.category !== CAT.CATEGORY_ALL) {
+          catalogEmptyEl.textContent = '「' + catalogState.category + '」分类下暂时没有课程。';
+        } else {
+          catalogEmptyEl.textContent = '课程目录暂时是空的。';
+        }
+        catalogEmptyEl.hidden = false;
+      }
+      return;
+    }
+    if (catalogEmptyEl) {
+      catalogEmptyEl.hidden = true;
+    }
+
+    var fragment = document.createDocumentFragment();
+    for (var i = 0; i < entries.length; i += 1) {
+      var li = createCatalogRow(entries[i]);
+      fragment.appendChild(li);
+      var rowEl = li.firstChild;
+      if (rowEl) {
+        catalogState.rowEls[entries[i].id] = rowEl;
+      }
+    }
+    catalogListEl.appendChild(fragment);
+  }
+
+  /**
+   * 更新底部操作条上方的结果摘要（空串表示收起）。
+   * 摘要多占一行会让操作条变高，必须重新量一次高度，
+   * 否则撤销提示（抬到操作条上方）会压住「添加所选」。
+   * @param {string} text
+   */
+  function setCatalogStatus(text) {
+    if (!catalogStatusEl) {
+      return;
+    }
+    var value = typeof text === 'string' ? text : '';
+    catalogStatusEl.textContent = value;
+    catalogStatusEl.hidden = !value;
+    if (catalogFooterEl && document.body) {
+      document.body.style.setProperty('--catalog-foot-h', catalogFooterEl.offsetHeight + 'px');
+    }
+  }
+
+  /**
+   * 同步底部操作条的计数与禁用态。
+   */
+  function updateCatalogFooter() {
+    var count = selectedCatalogIds().length;
+    if (catalogCountEl) {
+      catalogCountEl.textContent = '已选 ' + count + ' 门';
+    }
+    if (catalogAddEl) {
+      catalogAddEl.textContent = '添加所选(' + count + ')';
+      catalogAddEl.disabled = count === 0 || catalogState.busy;
+    }
+    if (catalogClearEl) {
+      catalogClearEl.disabled = count === 0 || catalogState.busy;
+    }
+  }
+
+  /**
+   * 全量渲染目录浮层内容。
+   */
+  function renderCatalog() {
+    renderCatalogStats();
+    renderCatalogChips();
+    renderCatalogList();
+    updateCatalogFooter();
+  }
+
+  /**
+   * 当前勾选的目录 id（按目录顺序，保证写入顺序稳定）。
+   * @return {Array<string>}
+   */
+  function selectedCatalogIds() {
+    var ids = [];
+    for (var i = 0; i < CAT.CATALOG.length; i += 1) {
+      var id = CAT.CATALOG[i].id;
+      if (catalogState.selected[id]) {
+        ids.push(id);
+      }
+    }
+    return ids;
+  }
+
+  /**
+   * 就地同步一行的勾选外观（不重建 DOM，焦点与滚动位置都不动）。
+   * @param {string} id
+   * @param {string} stateText '已选' / '' / '已添加'
+   */
+  function syncCatalogRow(id, stateText) {
+    var rowEl = catalogState.rowEls[id];
+    if (!rowEl) {
+      return;
+    }
+    var entry = CAT.findEntry(id);
+    if (!entry) {
+      return;
+    }
+    rowEl.setAttribute('aria-checked', stateText === '已选' ? 'true' : 'false');
+    rowEl.setAttribute('aria-label', buildCatalogRowAria(entry, stateText));
+    setCatalogBadge(rowEl, stateText);
+    var li = rowEl.parentNode;
+    if (li && li.classList) {
+      li.classList.toggle('is-selected', stateText === '已选');
+      li.classList.toggle('is-added', stateText === '已添加');
+    }
+  }
+
+  /**
+   * 把一组目录行标记为「已添加」（不可再勾选）。
+   * @param {Array<string>} ids
+   */
+  function markCatalogRowsAdded(ids) {
+    for (var i = 0; i < ids.length; i += 1) {
+      var id = ids[i];
+      delete catalogState.selected[id];
+      var rowEl = catalogState.rowEls[id];
+      if (!rowEl) {
+        continue;
+      }
+      rowEl.setAttribute('tabindex', '-1');
+      rowEl.setAttribute('aria-disabled', 'true');
+      syncCatalogRow(id, '已添加');
+    }
+  }
+
+  /**
+   * 空格切换某一行的勾选。
+   * @param {string} id
+   */
+  function toggleCatalogPick(id) {
+    var entry = CAT.findEntry(id);
+    if (!entry) {
+      return;
+    }
+    if (CAT.isDuplicate(entry, catalogState.keys)) {
+      // 已添加：不可勾选，但要给出原因，不能静默失败
+      announce('「' + entry.name + '」已经在课表里了');
+      return;
+    }
+    if (catalogState.selected[id]) {
+      delete catalogState.selected[id];
+      syncCatalogRow(id, '');
+    } else {
+      catalogState.selected[id] = true;
+      syncCatalogRow(id, '已选');
+    }
+    // 勾选一变，上一次添加的摘要就过期了
+    setCatalogStatus('');
+    updateCatalogFooter();
+  }
+
+  /**
+   * 清空全部勾选。
+   */
+  function clearCatalogSelection() {
+    var ids = selectedCatalogIds();
+    catalogState.selected = {};
+    for (var i = 0; i < ids.length; i += 1) {
+      syncCatalogRow(ids[i], '');
+    }
+    setCatalogStatus('');
+    updateCatalogFooter();
+  }
+
+  /**
+   * 加完之后把焦点挪到下一个还能选的行（键盘连续添加不用重新 Tab 一圈）。
+   * @param {string} fromId
+   */
+  function focusNextCatalogRow(fromId) {
+    var ids = [];
+    for (var i = 0; i < CAT.CATALOG.length; i += 1) {
+      ids.push(CAT.CATALOG[i].id);
+    }
+    var start = ids.indexOf(fromId);
+    if (start < 0) {
+      start = -1;
+    }
+    // 先往下找，再回到开头绕一圈；都不行就回到搜索框
+    for (var step = 1; step <= ids.length; step += 1) {
+      var candidate = ids[(start + step) % ids.length];
+      var rowEl = catalogState.rowEls[candidate];
+      if (rowEl && rowEl.getAttribute('aria-disabled') !== 'true') {
+        safeFocus(rowEl);
+        return;
+      }
+    }
+    safeFocus(catalogSearchEl);
+  }
+
+  /**
+   * 打开课程目录浮层。
+   * @param {HTMLElement|null} trigger 关闭后归还焦点
+   */
+  function openCatalog(trigger) {
+    if (!catalogOverlayEl) {
+      return;
+    }
+    // 目录模块缺失（文件被拦截 / 版本不匹配）时退回原来的单个添加，功能不中断
+    if (!Array.isArray(CAT.CATALOG) || typeof CAT.filterEntries !== 'function') {
+      showNotice('课程目录模块未能加载，已改为手动填写。');
+      openForm(null, trigger || btnAddEl);
+      return;
+    }
+    // 防重入：已经在打开态时不得再次加锁 / 压栈，否则滚动锁会失衡
+    if (catalogOverlayEl.classList.contains('is-open')) {
+      return;
+    }
+    catalogState.trigger = trigger || null;
+    catalogState.busy = false;
+    catalogState.query = '';
+    catalogState.category = CAT.CATEGORY_ALL;
+    catalogState.selected = {};
+    if (catalogSearchEl) {
+      catalogSearchEl.value = '';
+    }
+    catalogState.keys = buildCatalogKeys();
+
+    buildCatalogChips();
+    renderCatalog();
+    setCatalogStatus('');
+
+    showOverlay(catalogOverlayEl);
+    pushDialog(catalogSheetEl, requestCloseCatalog);
+    lockBodyScroll();
+    // 撤销提示要抬到底部操作条上方，否则会压住「添加所选」（高度实测，同互换操作条的做法）
+    document.body.setAttribute('data-catalog', 'on');
+    if (catalogFooterEl) {
+      document.body.style.setProperty('--catalog-foot-h', catalogFooterEl.offsetHeight + 'px');
+    }
+
+    safeFocus(catalogSearchEl || catalogCloseEl);
+    catalogState.openedAt = Date.now();
+  }
+
+  /**
+   * 关闭课程目录浮层。
+   * @param {boolean} restoreFocus 是否把焦点还给触发按钮
+   */
+  function closeCatalog(restoreFocus) {
+    if (!catalogOverlayEl || !catalogOverlayEl.classList.contains('is-open')) {
+      return;
+    }
+    popDialog(catalogSheetEl);
+    hideOverlay(catalogOverlayEl);
+    unlockBodyScroll();
+    document.body.removeAttribute('data-catalog');
+    document.body.style.removeProperty('--catalog-foot-h');
+    // 防御：浮层关掉后若已没有任何对话框，滚动锁必须归零
+    if (dialogStack.length === 0 && scrollLockDepth !== 0) {
+      scrollLockDepth = 0;
+      releaseBodyScroll();
+    }
+    var trigger = catalogState.trigger;
+    catalogState.trigger = null;
+    catalogState.busy = false;
+    catalogState.selected = {};
+    catalogState.rowEls = {};
+    if (restoreFocus) {
+      restoreFocusAfterDialog(trigger);
+    }
+  }
+
+  /**
+   * Esc / 关闭按钮：目录没有未保存内容，直接关。
+   */
+  function requestCloseCatalog() {
+    closeCatalog(true);
+  }
+
+  /**
+   * 「手动填写」：退出目录，走原有的单个添加表单（行为与改造前完全一致）。
+   */
+  function openFormFromCatalog() {
+    closeCatalog(false);
+    openForm(null, btnAddEl);
+  }
+
+  /**
+   * 目录行点击：已添加的行只提示原因，其余切换勾选。
+   * @param {MouseEvent} event
+   */
+  function handleCatalogListClick(event) {
+    var target = event.target;
+    if (!target || typeof target.closest !== 'function') {
+      return;
+    }
+    var rowEl = target.closest('[data-catalog-id]');
+    if (!rowEl) {
+      return;
+    }
+    var id = rowEl.getAttribute('data-catalog-id') || '';
+    if (!id) {
+      return;
+    }
+    if (rowEl.getAttribute('aria-disabled') === 'true') {
+      var entry = CAT.findEntry(id);
+      if (entry) {
+        announce('「' + entry.name + '」已经在课表里了');
+      }
+      return;
+    }
+    toggleCatalogPick(id);
+  }
+
+  /**
+   * 目录行键盘：空格切换、Enter 提交（与需求约定的键盘模型一致）。
+   * @param {KeyboardEvent} event
+   */
+  function handleCatalogListKeydown(event) {
+    var target = event.target;
+    if (!target || typeof target.closest !== 'function') {
+      return;
+    }
+    var rowEl = target.closest('[data-catalog-id]');
+    if (!rowEl) {
+      return;
+    }
+    if (event.key === ' ' || event.key === 'Spacebar') {
+      event.preventDefault();
+      toggleCatalogPick(rowEl.getAttribute('data-catalog-id') || '');
+      return;
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      submitCatalogSelection();
+    }
+  }
+
+  /**
+   * 单门连续添加的撤销（5 秒，单条通道）。
+   * 与「删除撤销」方向相反：这里撤销的是「刚加进来的一门」，所以按 id 移除。
+   * @param {Object} course 刚写入的课程记录
+   * @param {string} catalogId 对应的目录条目 id（撤销后把该行退回可勾选）
+   */
+  function showCatalogUndoToast(course, catalogId) {
+    clearUndo();
+    pendingUndo = { type: 'catalog-add', courseId: course.id, catalogId: catalogId, name: course.name };
+    showToast('已添加「' + course.name + '」', {
+      showUndo: true,
+      timeoutMs: UNDO_TIMEOUT_MS,
+      onTimeout: function () {
+        pendingUndo = null;
+      }
+    });
+  }
+
+  /**
+   * 撤销「刚通过目录添加的一门课」。
+   */
+  function undoCatalogAdd() {
+    var courseId = pendingUndo && pendingUndo.courseId;
+    var catalogId = pendingUndo && pendingUndo.catalogId;
+    if (!courseId) {
+      return;
+    }
+    var previous = state.courses;
+    var kept = [];
+    var removed = null;
+    for (var i = 0; i < previous.length; i += 1) {
+      if (previous[i].id === courseId) {
+        removed = previous[i];
+      } else {
+        kept.push(previous[i]);
+      }
+    }
+    if (!removed) {
+      clearUndo();
+      hideUndoToast();
+      return;
+    }
+    state.courses = kept;
+    if (!persistCourses()) {
+      // 写库失败：内存恢复成撤销前，保证「界面 = 库里」
+      state.courses = previous;
+      clearUndo();
+      hideUndoToast();
+      render();
+      announce('撤销失败，课程仍然保留');
+      return;
+    }
+    clearUndo();
+    render();
+    hideUndoToast();
+
+    // 目录还开着的话，把这一行退回「可勾选」
+    if (catalogOverlayEl && catalogOverlayEl.classList.contains('is-open')) {
+      syncCatalogAfterExternalChange();
+      if (catalogId) {
+        var rowEl = catalogState.rowEls[catalogId];
+        if (rowEl) {
+          safeFocus(rowEl);
+        }
+      }
+    }
+    announce('已撤销添加：' + removed.name);
+  }
+
+  /**
+   * 「添加所选」：勾选的目录条目一次写入课表。
+   *
+   * 四条不可让步的约束：
+   *   1. **读-改-写**：判重键与合并基线都取自「存储里的最新快照」而不是内存。
+   *      课程键是整包覆盖写（writeStore 只写 {version, courses}），
+   *      拿内存拼接会把另一个标签页刚写进去的课整批抹掉 —— 这是数据丢失级 bug。
+   *   2. 提交前**再判重一次**（勾选期间状态可能已变，例如另一个标签页加了同一门课）；
+   *   3. 写库失败必须回滚内存（回到存储里的样子）+ 保留勾选，绝不假装成功；
+   *   4. 只有「回读校验通过」才算成功（与拍照导入同一套落盘校验）。
+   */
+  function submitCatalogSelection() {
+    if (catalogState.busy) {
+      return;
+    }
+    var ids = selectedCatalogIds();
+    if (ids.length === 0) {
+      announce('请先勾选要添加的课程');
+      return;
+    }
+
+    // ★ 读-改-写：基线取自存储（存储不可读时才退回内存副本）。
+    //   判重必须基于这份最新快照，否则跨标签页会互相覆盖。
+    var fresh = readCoursesSnapshot();
+    // 写失败的回滚目标 = 写之前的内存状态（正常情况下与 fresh 内容一致）
+    var previousMemory = state.courses;
+    catalogState.keys = CAT.buildKeySet(fresh);
+
+    var entries = [];
+    var alreadyAdded = [];
+    var invalid = 0;
+    for (var i = 0; i < ids.length; i += 1) {
+      var entry = CAT.findEntry(ids[i]);
+      if (!entry) {
+        continue;
+      }
+      if (CAT.isDuplicate(entry, catalogState.keys)) {
+        alreadyAdded.push(entry.id);
+        continue;
+      }
+      var values = {
+        name: String(entry.name || '').trim(),
+        weekday: clampWeekday(entry.weekday),
+        startTime: normalizeTimeString(entry.startTime),
+        endTime: normalizeTimeString(entry.endTime),
+        teacher: String(entry.teacher || '').trim(),
+        place: String(entry.place || '').trim(),
+        note: ''
+      };
+      if (validateCourseValues(values).length > 0) {
+        invalid += 1;
+        continue;
+      }
+      entries.push({ entry: entry, values: values });
+    }
+
+    // 已被别处加过的：行立刻变「已添加」，勾选撤掉（这不是失败，是状态同步）
+    if (alreadyAdded.length > 0) {
+      markCatalogRowsAdded(alreadyAdded);
+      updateCatalogFooter();
+    }
+
+    if (entries.length === 0) {
+      var onlyText = alreadyAdded.length > 0
+        ? '所选课程都已经在课表里了'
+        : '所选课程信息不完整，无法添加';
+      showInfoToast(onlyText);
+      announce(onlyText);
+      return;
+    }
+
+    var batchId = createId();
+    var now = Date.now();
+    var records = [];
+    // 冲突只统计不拦截（应用本就支持同星期重叠课并排显示），但要分两个口径说清：
+    //   · 与已有课程重叠 —— 跨批次，用户可能没意识到今天已经排了课；
+    //   · 本批内部互相重叠 —— 一次勾了两门同段选修，摘要里必须点明。
+    var conflictWithExisting = 0;
+    var conflictInBatch = 0;
+    var batchEntries = [];
+    for (var b = 0; b < entries.length; b += 1) {
+      batchEntries.push(entries[b].entry);
+    }
+    for (var j = 0; j < entries.length; j += 1) {
+      if (CAT.hasConflict(entries[j].entry, fresh)) {
+        conflictWithExisting += 1;
+      }
+      var others = [];
+      for (var o = 0; o < batchEntries.length; o += 1) {
+        if (o !== j) {
+          others.push(batchEntries[o]);
+        }
+      }
+      if (CAT.hasConflict(entries[j].entry, others)) {
+        conflictInBatch += 1;
+      }
+      records.push(
+        buildCourseRecord(entries[j].values, {
+          source: 'manual',
+          importBatchId: batchId,
+          now: now
+        })
+      );
+    }
+
+    catalogState.busy = true;
+    updateCatalogFooter();
+
+    // 写 merged（= 存储快照 + 本批记录），绝不写「旧内存 + 本批」
+    var merged = fresh.concat(records);
+    state.courses = merged;
+
+    var writeResult = writeStore(merged);
+    var verified = false;
+    if (writeResult.ok) {
+      var wanted = {};
+      for (var k = 0; k < records.length; k += 1) {
+        wanted[records[k].id] = true;
+      }
+      var reloaded = readStore();
+      for (var v = 0; v < reloaded.courses.length; v += 1) {
+        if (wanted[reloaded.courses[v].id]) {
+          verified = true;
+          break;
+        }
+      }
+    }
+
+    if (!writeResult.ok || !verified) {
+      // 回滚内存与界面：库里没有的东西，界面上也不许有；勾选原样保留。
+      // 回滚到 fresh（= 写之前存储里的内容），内存与库始终一致；
+      // 存储不可读时 readCoursesSnapshot 返回的就是内存副本，此时等价于原地回滚。
+      state.courses = fresh === previousMemory ? previousMemory : fresh;
+      catalogState.busy = false;
+      render();
+      updateCatalogFooter();
+      var reason = writeResult.ok
+        ? '写入后回读校验失败（数据未真正落盘）'
+        : '本地存储写入失败（可能空间已满或被禁用）';
+      setCatalogStatus('添加失败，已回滚，勾选已保留');
+      showInfoToast('添加失败：' + reason + '，已回滚，勾选已保留');
+      announce('添加失败，已回滚，勾选已保留');
+      return;
+    }
+
+    catalogState.busy = false;
+    catalogState.keys = buildCatalogKeys();
+
+    var addedIds = [];
+    for (var m = 0; m < entries.length; m += 1) {
+      addedIds.push(entries[m].entry.id);
+    }
+    var focusedRow =
+      document.activeElement && document.activeElement.getAttribute
+        ? document.activeElement.getAttribute('data-catalog-id')
+        : '';
+    markCatalogRowsAdded(addedIds);
+    catalogState.selected = {};
+    renderCatalog();
+
+    // 课表 / 清单立即重渲染
+    render();
+
+    if (focusedRow && addedIds.indexOf(focusedRow) >= 0) {
+      focusNextCatalogRow(focusedRow);
+    }
+
+    var text = '已添加 ' + records.length + ' 门课程';
+    if (conflictWithExisting > 0) {
+      text += '，' + conflictWithExisting + ' 门与已有课程时间重叠';
+    }
+    if (conflictInBatch > 0) {
+      text += '，其中本批 ' + conflictInBatch + ' 门互相重叠';
+    }
+    if (alreadyAdded.length > 0) {
+      text += '，' + alreadyAdded.length + ' 门已存在已跳过';
+    }
+    if (invalid > 0) {
+      text += '，' + invalid + ' 门信息不完整已跳过';
+    }
+
+    if (records.length > 1) {
+      // 批量：收起浮层 + 10 秒整批撤销（与拍照导入共用同一个 importBatchId 通道）
+      var trigger = catalogState.trigger;
+      closeCatalog(false);
+      showImportUndoToast(text, batchId, records.length);
+      announce(text + '。10 秒内可撤销。');
+      restoreFocusAfterDialog(trigger || btnAddEl);
+      return;
+    }
+
+    // 单门：浮层不关闭，方便接着挑下一门；撤销走单条通道（5 秒）
+    showCatalogUndoToast(records[0], addedIds[0]);
+    // 完整摘要（含重叠加「N 门已跳过」）留在操作条上方，不随 5 秒提示消失
+    setCatalogStatus(text + '，5 秒内可撤销');
+    announce(text + '。5 秒内可撤销，可继续勾选下一门。');
+  }
+
   /* ==================== 十九、事件绑定 ==================== */
 
   /**
@@ -8892,6 +9745,21 @@
     colorPickerEl = document.getElementById('color-picker');
     errorNameEl = document.getElementById('error-name');
     errorTimeEl = document.getElementById('error-time');
+
+    catalogOverlayEl = document.getElementById('catalog-overlay');
+    catalogSheetEl = document.getElementById('catalog-sheet');
+    catalogFooterEl = document.getElementById('catalog-footer');
+    catalogCloseEl = document.getElementById('catalog-close');
+    catalogManualEl = document.getElementById('catalog-manual');
+    catalogStatsEl = document.getElementById('catalog-stats');
+    catalogSearchEl = document.getElementById('catalog-search');
+    catalogChipsEl = document.getElementById('catalog-chips');
+    catalogListEl = document.getElementById('catalog-list');
+    catalogEmptyEl = document.getElementById('catalog-empty');
+    catalogCountEl = document.getElementById('catalog-selected-count');
+    catalogClearEl = document.getElementById('catalog-clear');
+    catalogAddEl = document.getElementById('catalog-add');
+    catalogStatusEl = document.getElementById('catalog-status');
 
     importOverlayEl = document.getElementById('import-overlay');
     importSheetEl = document.getElementById('import-sheet');
@@ -9075,7 +9943,10 @@
   }
 
   /**
-   * 顶栏主按钮：文案随栏目变化，行为也跟着变（课程 → 课程表单 / 任务 → 任务表单）。
+   * 顶栏主按钮：文案随栏目变化，行为也跟着变
+   * （课程 → 课程目录 / 任务 → 任务表单 / 旅游 → 行程表单）。
+   * 课程走「先看目录」这条路：勾选批量添加比一门一门手填快得多，
+   * 手动填写仍然保留在目录浮层右上角（openFormFromCatalog）。
    * @param {HTMLElement|null} trigger
    */
   function handleAddClick(trigger) {
@@ -9087,7 +9958,7 @@
       openItemForm('trip', null, trigger || btnAddEl);
       return;
     }
-    openForm(null, trigger || btnAddEl);
+    openCatalog(trigger || btnAddEl);
   }
 
   /**
@@ -9160,7 +10031,8 @@
     }
     if (btnAddEmptyEl) {
       btnAddEmptyEl.addEventListener('click', function () {
-        openForm(null, btnAddEmptyEl);
+        // 空状态 CTA 与顶栏一致：先打开课程目录（手动填写在目录里）
+        openCatalog(btnAddEmptyEl);
       });
     }
     if (noticeCloseEl) {
@@ -9502,6 +10374,58 @@
       });
     }
 
+    // ---- 课程目录（勾选批量添加）----
+    if (catalogCloseEl) {
+      catalogCloseEl.addEventListener('click', requestCloseCatalog);
+    }
+    if (catalogManualEl) {
+      catalogManualEl.addEventListener('click', openFormFromCatalog);
+    }
+    if (catalogSearchEl) {
+      // 即时过滤：只重建列表，焦点留在搜索框里
+      catalogSearchEl.addEventListener('input', function () {
+        catalogState.query = catalogSearchEl.value;
+        renderCatalogList();
+      });
+    }
+    if (catalogChipsEl) {
+      catalogChipsEl.addEventListener('click', function (event) {
+        var target = event.target;
+        if (!target || typeof target.closest !== 'function') {
+          return;
+        }
+        var chip = target.closest('[data-category]');
+        if (!chip) {
+          return;
+        }
+        catalogState.category = chip.getAttribute('data-category') || CAT.CATEGORY_ALL;
+        renderCatalogChips();
+        renderCatalogList();
+      });
+    }
+    if (catalogListEl) {
+      catalogListEl.addEventListener('click', handleCatalogListClick);
+      catalogListEl.addEventListener('keydown', handleCatalogListKeydown);
+    }
+    if (catalogClearEl) {
+      catalogClearEl.addEventListener('click', clearCatalogSelection);
+    }
+    if (catalogAddEl) {
+      catalogAddEl.addEventListener('click', submitCatalogSelection);
+    }
+    if (catalogOverlayEl) {
+      catalogOverlayEl.addEventListener('click', function (event) {
+        if (event.target !== catalogOverlayEl) {
+          return;
+        }
+        // 打开浮层的同一操作若连点到遮罩上，不视为「点遮罩关闭」
+        if (Date.now() - catalogState.openedAt < OVERLAY_GUARD_MS) {
+          return;
+        }
+        closeCatalog(true);
+      });
+    }
+
     // 排课助手
     if (assistantContinueEl) {
       assistantContinueEl.addEventListener('click', continueWithSuggestion);
@@ -9775,6 +10699,22 @@
         return;
       }
       renderTodayBar();
+    });
+
+    // 其它标签页改了课程键：重读存储并刷新界面（含目录行状态）。
+    // 这里**只读不写**：storage 事件在回环里再写库会互相触发，形成写风暴。
+    window.addEventListener('storage', function (event) {
+      // key === null 表示 clear()，同样要重读
+      if (event && event.key !== null && event.key !== STORAGE_KEY) {
+        return;
+      }
+      var loaded = readStore();
+      state.courses = loaded.courses;
+      if (loaded.notice) {
+        showNotice(loaded.notice);
+      }
+      syncCatalogAfterExternalChange();
+      render();
     });
 
     // 识别服务配置变化（保存 / 清除）：空状态主 CTA 的文案要跟着变

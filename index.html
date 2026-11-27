@@ -295,7 +295,7 @@
       </svg>
       <h2 class="empty-state__title" id="empty-title">还没有课程</h2>
       <p class="empty-state__desc" id="empty-desc">
-        拍一张课表就能一次录入整周，也可以手动添加。课程数据只保存在这台设备上。
+        拍一张课表就能一次录入整周，也可以从课程目录里勾选添加。课程数据只保存在这台设备上。
       </p>
       <button type="button" class="btn btn--primary empty-state__cta" id="btn-camera-empty">
         <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-camera"></use></svg>
@@ -306,7 +306,7 @@
       </p>
       <button type="button" class="btn btn--ghost empty-state__secondary" id="btn-add-empty" aria-haspopup="dialog">
         <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-plus"></use></svg>
-        <span>手动添加</span>
+        <span>从课程目录添加</span>
       </button>
     </section>
 
@@ -632,6 +632,48 @@
     </div>
   </div>
 
+  <!-- ===== 课程目录（勾选批量添加）=====
+       主路径：顶栏「添加课程」与空状态 CTA 都先打开这里，勾选后一次写入多门课。
+       手动填写的单个添加方式完全保留（面板右上角「手动填写」仍走 #form-overlay）。
+       条目来自 js/catalog.js 的只读静态数据，不写库、不新增存储键；
+       列表行由 app.js 用 createElement 构建（role="checkbox" 的自定义勾选行）。 -->
+  <div class="overlay overlay--sheet" id="catalog-overlay" hidden>
+    <div class="sheet sheet--catalog" id="catalog-sheet" role="dialog" aria-modal="true"
+         aria-labelledby="catalog-title">
+      <div class="sheet__grabber" aria-hidden="true"></div>
+      <div class="sheet__header">
+        <h2 class="sheet__title" id="catalog-title">课程目录</h2>
+        <button type="button" class="btn btn--ghost btn--sm" id="catalog-manual" title="打开手动填写表单">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-edit"></use></svg>
+          <span>手动填写</span>
+        </button>
+        <button type="button" class="icon-btn" id="catalog-close" aria-label="关闭课程目录">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg>
+        </button>
+      </div>
+      <div class="sheet__body">
+        <p class="catalog-stats" id="catalog-stats">共 0 门 · 已添加 0 门</p>
+        <!-- 搜索 + 分类常驻：40 门课要滚很久，筛选条不能跟着滚走 -->
+        <div class="catalog-toolbar">
+          <label class="sr-only" for="catalog-search">搜索课程名称、分类、简介或教师</label>
+          <input class="input catalog-search" id="catalog-search" type="search" autocomplete="off"
+                 autocapitalize="off" spellcheck="false" placeholder="搜索名称 / 分类 / 简介 / 教师">
+          <div class="catalog-chips" id="catalog-chips" role="group" aria-label="按分类筛选"></div>
+        </div>
+        <p class="catalog-empty" id="catalog-empty" role="status" hidden>没有匹配的课程。</p>
+        <ul class="catalog-list" id="catalog-list" role="list" aria-label="课程目录列表"></ul>
+      </div>
+      <div class="sheet__footer catalog-footer" id="catalog-footer">
+        <!-- 上一次添加的结果摘要：单门连续添加时浮层不关，摘要要留在眼睛所在的位置
+             （toast 在 320px 下会截断长摘要，这里不截断、可换行） -->
+        <p class="catalog-status" id="catalog-status" role="status" hidden></p>
+        <p class="catalog-footer__count" id="catalog-selected-count">已选 0 门</p>
+        <button type="button" class="btn btn--ghost" id="catalog-clear" disabled>清空</button>
+        <button type="button" class="btn btn--primary" id="catalog-add" disabled>添加所选(0)</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ===== 图片识别导入 ===== -->
   <div class="overlay overlay--sheet" id="import-overlay" hidden>
     <div class="sheet sheet--import" id="import-sheet" role="dialog" aria-modal="true" aria-labelledby="import-title">
@@ -864,6 +906,7 @@
   <script src="js/swap-log.js" defer></script>
   <script src="js/sections.js" defer></script>
   <script src="js/ringtone.js" defer></script>
+  <script src="js/catalog.js" defer></script>
   <script src="js/app.js" defer></script>
 </body>
 </html>
