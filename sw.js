@@ -13,7 +13,7 @@
  */
 'use strict';
 
-var VERSION = 'v1-2026-11-28';
+var VERSION = 'v2-2026-11-28';
 var CACHE_NAME = 'course-manager-' + VERSION;
 
 /** 应用外壳：缺一个都不影响启动，但缺了对应功能会失效 */

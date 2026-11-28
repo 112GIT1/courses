@@ -1356,6 +1356,104 @@ body[data-view='grid'] {
   margin-left: auto;
 }
 
+/* -------------------- 课表显示方式：整周 / 按天（窄屏默认按天） -------------------- */
+/* 病根：390px 只能容下 2.5 列，7 列网格必然"看不全"。按天视图是手机端的解，
+   整周模式则保留横向滚动，但必须让"还能滑"这件事看得见（右侧渐隐 + 一行提示）。 */
+.tt-mode {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+/* 分段的两个按钮不占满整行：右边留给（将来可能出现的）辅助控件 */
+.segmented--tt {
+  flex: 0 0 auto;
+}
+
+.segmented--tt .segmented__btn {
+  padding: 0 16px;
+  font-size: 13px;
+}
+
+/* 星期 chips：7 列等宽，320px 下每格仍有 44px 高的命中区，不横向滚动 */
+.tt-days {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.tt-days[hidden] {
+  display: none;
+}
+
+.tt-day-chip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: var(--tap-size);
+  padding: 0 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.1;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.tt-day-chip:hover {
+  color: var(--text);
+}
+
+/* 今天：小圆点 + 品牌色文字（aria-current="date" 供读屏），颜色不是唯一线索 */
+.tt-day-chip.is-today {
+  color: var(--brand-text);
+  border-color: var(--brand-soft);
+}
+
+.tt-day-chip.is-today::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.tt-day-chip.is-selected {
+  border-color: var(--brand-bg);
+  background: var(--brand-soft);
+  color: var(--brand-text);
+}
+
+.tt-day-chip:focus-visible {
+  outline: 2px solid var(--brand-text);
+  outline-offset: 1px;
+}
+
+/* 整周模式的一行提示：在文档流里（不遮内容），只是把"还能往右滑"说出来 */
+.tt-hint {
+  margin: -2px 0 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.tt-hint[hidden] {
+  display: none;
+}
+
 /* ------------------------------ 课表网格 ------------------------------ */
 .timetable-view[hidden] {
   display: none;
@@ -1378,6 +1476,60 @@ body[data-view='grid'] {
   outline-offset: 2px;
 }
 
+/* 横向溢出时两端渐隐：让"这一侧还有内容"看得见。
+   mask 作用在滚动容器自身的可视区上，不随内容滚走，也不需要额外 DOM。
+   只在对应一侧确实还藏有内容时出现（.is-scroll-start / .is-scroll-end 由 JS 维护）。
+
+   左缘为什么要用一条硬跳变：节次轴是 sticky 且不透明的，被它压住的列在视觉上
+   紧贴轴的右缘 —— 直接在最左 22px 做渐隐只会把节次文字弄灰，什么也提示不了。
+   所以 #000 一直铺到 --tt-axis-w，再在同一位置跳到 10% 透明度，然后 22px 内回到 #000：
+   轴完整保留，渐隐正好落在"被压住的列"露出来的那一条上。 */
+.timetable.has-h-overflow:not(.is-scroll-end) {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 22px), rgba(0, 0, 0, 0.1) 100%);
+  mask-image: linear-gradient(to right, #000 calc(100% - 22px), rgba(0, 0, 0, 0.1) 100%);
+}
+
+.timetable.has-h-overflow:not(.is-scroll-start) {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 0,
+    #000 var(--tt-axis-w),
+    rgba(0, 0, 0, 0.1) var(--tt-axis-w),
+    #000 calc(var(--tt-axis-w) + 22px),
+    #000 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    #000 0,
+    #000 var(--tt-axis-w),
+    rgba(0, 0, 0, 0.1) var(--tt-axis-w),
+    #000 calc(var(--tt-axis-w) + 22px),
+    #000 100%
+  );
+}
+
+/* 两端都还能滑：合并成一条，避免后写的规则把另一侧盖掉 */
+.timetable.has-h-overflow:not(.is-scroll-start):not(.is-scroll-end) {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 0,
+    #000 var(--tt-axis-w),
+    rgba(0, 0, 0, 0.1) var(--tt-axis-w),
+    #000 calc(var(--tt-axis-w) + 22px),
+    #000 calc(100% - 22px),
+    rgba(0, 0, 0, 0.1) 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    #000 0,
+    #000 var(--tt-axis-w),
+    rgba(0, 0, 0, 0.1) var(--tt-axis-w),
+    #000 calc(var(--tt-axis-w) + 22px),
+    #000 calc(100% - 22px),
+    rgba(0, 0, 0, 0.1) 100%
+  );
+}
+
 .tt {
   position: relative;
   display: flex;
@@ -1386,8 +1538,9 @@ body[data-view='grid'] {
      横向滚动时节次轴会被「包含块边界」夹住而跟着滚走。 */
   width: max-content;
   min-width: 100%;
-  /* 手机列宽固定约 88px；宽屏若有多道并排，由 JS 设置的 --tt-col-min-wide 抬高列宽，
-     保证每一道仍有 44px 的可点宽度（见下方 640px 媒体查询）。 */
+  /* 手机列宽固定 88px（一屏放不下几列是预期，手机默认走「按天」）；
+     宽屏由 JS 算出的 --tt-col-fit 兜底，保证 7 列 + 节次轴一屏放得下
+     （见 app.js 的 applyTimetableColumnFit 与下方 640px 媒体查询）。 */
   --tt-col-min: 88px;
 }
 
@@ -1687,6 +1840,139 @@ body[data-view='grid'] {
 
 .tt-block.is-new {
   box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+/* -------------------- 按天视图：当天课程纵向排列（不横滑、不截断） -------------------- */
+.td {
+  padding: 12px 12px 16px;
+}
+
+.td__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.td__day {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.td__count {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.td__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.td__empty {
+  margin: 4px 0 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+/* 一个课程块：左侧 4px 课程色条 + 三到四行信息。
+   所有文字都允许换行（overflow-wrap: anywhere），绝不出现省略号 ——
+   "看不全"正是这一轮要解决的问题。 */
+.td-block {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  min-height: var(--tap-size);
+  padding: 10px 12px 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  overflow: hidden;
+}
+
+.td-block::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--course-accent, var(--brand-bg));
+  pointer-events: none;
+}
+
+.td-block:hover {
+  border-color: var(--brand-bg);
+}
+
+.td-block.is-swap-picked {
+  border-color: var(--brand-bg);
+  box-shadow: 0 0 0 2px var(--brand-bg);
+  padding-right: 32px;
+}
+
+/* 选中序号角标贴在块内右上角（块有 overflow:hidden，不能沿用 -7px 的定位） */
+.td-block .swap-pick-badge {
+  top: 6px;
+  right: 6px;
+  left: auto;
+}
+
+.td-block__time-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.td-block__time {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--brand-text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.td-block__period {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.td-block__name {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.td-block__meta,
+.td-block__note {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.td-block__note {
+  color: var(--text-muted);
 }
 
 .timetable__fallback {
@@ -2345,7 +2631,11 @@ body[data-view='grid'] {
   }
 
   .tt {
-    --tt-col-min: var(--tt-col-min-wide, 88px);
+    /* 宽屏的列宽下限由 JS 算好的「7 列刚好铺满」兜底（--tt-col-fit）：
+       768 宽的窗口里 7×88 + 76 = 692 比容器内宽 688 多 4px，
+       不改就会裁掉第 7 列、并误触发横向滚动提示。
+       --tt-col-fit 缺失时（JS 未跑到）回落到原来的 88px，行为与旧版一致。 */
+    --tt-col-min: var(--tt-col-fit, 88px);
   }
 
   .app-header__toolbar {
@@ -2695,6 +2985,7 @@ body[data-swap='on'] .toast {
 
 /* ------------------------------ 浅色：8 × 三件套 ------------------------------ */
 .tt-block[data-color='blue'],
+.td-block[data-color='blue'],
 .card[data-color='blue'],
 .color-swatch[data-color='blue'],
 .detail-dot[data-color='blue'],
@@ -2705,6 +2996,7 @@ body[data-swap='on'] .toast {
 }
 
 .tt-block[data-color='teal'],
+.td-block[data-color='teal'],
 .card[data-color='teal'],
 .color-swatch[data-color='teal'],
 .detail-dot[data-color='teal'],
@@ -2718,6 +3010,7 @@ body[data-swap='on'] .toast {
 }
 
 .tt-block[data-color='green'],
+.td-block[data-color='green'],
 .card[data-color='green'],
 .color-swatch[data-color='green'],
 .detail-dot[data-color='green'],
@@ -2728,6 +3021,7 @@ body[data-swap='on'] .toast {
 }
 
 .tt-block[data-color='amber'],
+.td-block[data-color='amber'],
 .card[data-color='amber'],
 .color-swatch[data-color='amber'],
 .detail-dot[data-color='amber'],
@@ -2738,6 +3032,7 @@ body[data-swap='on'] .toast {
 }
 
 .tt-block[data-color='purple'],
+.td-block[data-color='purple'],
 .card[data-color='purple'],
 .color-swatch[data-color='purple'],
 .detail-dot[data-color='purple'],
@@ -2748,6 +3043,7 @@ body[data-swap='on'] .toast {
 }
 
 .tt-block[data-color='orange'],
+.td-block[data-color='orange'],
 .card[data-color='orange'],
 .color-swatch[data-color='orange'],
 .detail-dot[data-color='orange'],
@@ -2760,6 +3056,7 @@ body[data-swap='on'] .toast {
 }
 
 .tt-block[data-color='red'],
+.td-block[data-color='red'],
 .card[data-color='red'],
 .color-swatch[data-color='red'],
 .detail-dot[data-color='red'],
@@ -2770,6 +3067,7 @@ body[data-swap='on'] .toast {
 }
 
 .tt-block[data-color='gray'],
+.td-block[data-color='gray'],
 .card[data-color='gray'],
 .color-swatch[data-color='gray'],
 .detail-dot[data-color='gray'],
@@ -2784,6 +3082,7 @@ body[data-swap='on'] .toast {
    text 换成同色系的浅色，accent 提亮以在暗底上仍然醒目。 */
 @media (prefers-color-scheme: dark) {
   .tt-block[data-color='blue'],
+  .td-block[data-color='blue'],
   .card[data-color='blue'],
   .color-swatch[data-color='blue'],
   .detail-dot[data-color='blue'],
@@ -2794,6 +3093,7 @@ body[data-swap='on'] .toast {
   }
 
   .tt-block[data-color='teal'],
+  .td-block[data-color='teal'],
   .card[data-color='teal'],
   .color-swatch[data-color='teal'],
   .detail-dot[data-color='teal'],
@@ -2804,6 +3104,7 @@ body[data-swap='on'] .toast {
   }
 
   .tt-block[data-color='green'],
+  .td-block[data-color='green'],
   .card[data-color='green'],
   .color-swatch[data-color='green'],
   .detail-dot[data-color='green'],
@@ -2814,6 +3115,7 @@ body[data-swap='on'] .toast {
   }
 
   .tt-block[data-color='amber'],
+  .td-block[data-color='amber'],
   .card[data-color='amber'],
   .color-swatch[data-color='amber'],
   .detail-dot[data-color='amber'],
@@ -2824,6 +3126,7 @@ body[data-swap='on'] .toast {
   }
 
   .tt-block[data-color='purple'],
+  .td-block[data-color='purple'],
   .card[data-color='purple'],
   .color-swatch[data-color='purple'],
   .detail-dot[data-color='purple'],
@@ -2834,6 +3137,7 @@ body[data-swap='on'] .toast {
   }
 
   .tt-block[data-color='orange'],
+  .td-block[data-color='orange'],
   .card[data-color='orange'],
   .color-swatch[data-color='orange'],
   .detail-dot[data-color='orange'],
@@ -2844,6 +3148,7 @@ body[data-swap='on'] .toast {
   }
 
   .tt-block[data-color='red'],
+  .td-block[data-color='red'],
   .card[data-color='red'],
   .color-swatch[data-color='red'],
   .detail-dot[data-color='red'],
@@ -2854,6 +3159,7 @@ body[data-swap='on'] .toast {
   }
 
   .tt-block[data-color='gray'],
+  .td-block[data-color='gray'],
   .card[data-color='gray'],
   .color-swatch[data-color='gray'],
   .detail-dot[data-color='gray'],
@@ -4406,4 +4712,180 @@ body[data-swap='on'] .toast {
    单门连续添加后浮层不关，toast 压住「添加所选」就等于让人无法继续。 */
 body[data-catalog='on'] .toast {
   bottom: calc(var(--catalog-foot-h, 84px) + 16px);
+}
+
+/* ==========================================================================
+   今日面板（更多 →「今天」 / 顶部「今天 N 节」信息条）
+   --------------------------------------------------------------------------
+   一个 sheet 里上下两段：今日课程（按开始时间升序，正在上的标「进行中」）
+   + 今日任务（未完成在前、已完成置灰置底）。底部只有「关闭」一个按钮。
+   ========================================================================== */
+
+.sheet--today .sheet__body {
+  padding-top: 0;
+}
+
+.today-sec + .today-sec {
+  margin-top: 18px;
+}
+
+.today-sec__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.today-sec__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.today-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.today-empty {
+  margin: 2px 0 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+/* ---- 今日课程的一行：整行是一个按钮（点开课程详情） ---- */
+.today-course {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: var(--tap-size);
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.today-course:hover {
+  border-color: var(--brand-bg);
+}
+
+.today-course:focus-visible {
+  outline: 2px solid var(--brand-text);
+  outline-offset: 1px;
+}
+
+.today-course__time {
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--brand-text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.today-course__body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.today-course__name-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.today-course__name {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+/* 「进行中」用文字承载语义，颜色只是辅助 */
+.today-course__badge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--brand-soft);
+  color: var(--brand-text);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.today-course__meta {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* ---- 今日任务的一行：勾选框 + 标题 + 时间 ---- */
+.today-task {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 0 2px;
+}
+
+/* 复用任务栏目的 .row__check（24px 视觉 + 44px 命中区），只把外边距归零 */
+.today-task .row__check {
+  margin: 0;
+}
+
+.today-task__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 15px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.today-task.is-done .today-task__title {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.today-task__time {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 窄屏（≤559px）：今日面板与按天视图是同一档，略收字号保住一行放得下 */
+@media (max-width: 559px) {
+  .td {
+    padding: 10px 10px 14px;
+  }
+
+  .today-course {
+    gap: 8px;
+  }
+
+  .tt-day-chip {
+    font-size: 11.5px;
+  }
 }

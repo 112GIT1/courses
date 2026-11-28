@@ -63,6 +63,16 @@
   var OVERLAY_GUARD_MS = 300;
   /** 触控热区最小边长（px），课程块通过透明伪元素凑到这个尺寸 */
   var TAP_MIN_PX = 44;
+
+  /**
+   * 「按天」模式的断点：< 560px 视为窄屏。
+   * 必须与 styles.css 里的 `@media (max-width: 559px)` 保持一致 ——
+   * 一处控制 JS 的默认显示方式，一处控制按天视图的排版细节。
+   */
+  var TT_DAY_QUERY = '(max-width: 559px)';
+
+  /** 整周模式滑动提示的存活时间（毫秒）：够看见，又不至于一直占着一行 */
+  var TT_HINT_TIMEOUT_MS = 8000;
   /** 互换模式需要选中的课程数量 */
   var SWAP_PICK_LIMIT = 2;
   /** 互换结果的三种终态 */
@@ -103,6 +113,10 @@
 
   /* ---- 栏目数据层：统一从 sections.js 读取（解析期取走，与上面 TT 同款约定） ---- */
   var SEC = window.CourseSections || {};
+  /* 任务 / 行程的存储键由 sections.js 拥有；这里只借它的值做 storage 事件过滤，
+     读档仍然走 SEC.readTasks / SEC.readTrips（不自己解析 JSON）。 */
+  var TASKS_STORAGE_KEY = SEC.TASKS_KEY || 'course-manager:tasks:v1';
+  var TRIPS_STORAGE_KEY = SEC.TRIPS_KEY || 'course-manager:trips:v1';
   /* ---- 课程目录：只读静态数据 + 判重/过滤纯函数（catalog.js） ---- */
   var CAT = window.CourseCatalog || {};
   /** 4 个平级栏目，顺序 = 分段控件里的顺序 */
@@ -223,6 +237,41 @@
   var importBulkNoneEl = null;
   var todayBarEl = null;
   var todayBarTextEl = null;
+
+  /* 今日面板（当日课程 + 当日任务） */
+  var todayOverlayEl = null;
+  var todaySheetEl = null;
+  var todayTitleEl = null;
+  var todayBodyEl = null;
+  var todayCloseEl = null;
+  var todayDoneEl = null;
+  /** @type {HTMLElement|null} 打开今日面板的触发元素（关闭后归还焦点） */
+  var lastTodayTrigger = null;
+
+  /* 课表显示方式：整周 / 按天（全部是内存态，不写存储） */
+  var ttModeEl = null;
+  var ttModeWeekEl = null;
+  var ttModeDayEl = null;
+  var ttDaysEl = null;
+  var ttHintEl = null;
+  /** 本次会话是否已经给过「左右滑动」提示 */
+  var ttHintShown = false;
+  /** 整周模式本次是否已自动定位到今天列 */
+  var ttAutoScrolled = false;
+  /** 用户是否手动横向滚过整周课表（滚过之后不再抢滚动） */
+  var ttUserScrolled = false;
+  /** 星期 chips 重建后焦点该落在哪一天（方向键换天时用一次就清掉） */
+  var ttPendingChipFocus = 0;
+  /** 上一次构建整周课表时的宽屏列宽下限（随道数变化，供视口变化时重算 fit 用） */
+  var ttWideColMin = 88;
+  /** 上一次构建整周课表时全表最多需要几道并排 */
+  var ttMaxLanes = 1;
+  /** 上一次观测到的横向滚动位置，用来判断是不是真的横向滚了 */
+  var ttLastScrollLeft = 0;
+  /** 滑动提示的自动隐藏定时器 */
+  var ttHintTimerId = null;
+  /** 视口变化的防抖定时器 */
+  var ttResizeTimerId = null;
   var btnSwapEl = null;
   var btnLogEl = null;
 
@@ -436,7 +485,17 @@
     /** @type {'task'|'trip'} 新增/编辑浮层当前的业务类型 */
     itemMode: 'task',
     /** @type {string|null} 正在编辑的任务/行程 id，null 表示新增 */
-    itemEditingId: null
+    itemEditingId: null,
+    /**
+     * @type {'week'|'day'} 课表显示方式：整周 / 按天。
+     * 只在内存里，不写 sections:v1、也不新增任何存储键：
+     * 刷新后按屏幕宽度重新取默认值（窄屏按天、宽屏整周）。
+     */
+    ttMode: 'week',
+    /** @type {number} 按天模式选中的星期（1-7）；0 / 非法时取今天 */
+    ttDay: 0,
+    /** @type {boolean} 用户是否手动切换过显示方式（是则 resize 不再覆盖他的选择） */
+    ttModeUserSet: false
   };
 
   /** 新增/编辑浮层的表单快照（脏检查用） */
@@ -2009,7 +2068,7 @@
   }
 
   /**
-   * 构建整张课表。
+   * 构建整张课表（按 state.ttMode 分派：整周 7 列网格 / 按天时间轴）。
    */
   function buildTimetable() {
     if (!timetableScrollEl) {
@@ -2032,6 +2091,13 @@
       timetableScrollEl.appendChild(
         createEl('p', 'timetable__fallback', '课表模块未能加载，请切换到「清单」视图查看课程。')
       );
+      return;
+    }
+
+    ensureTimetableMode();
+    if (state.ttMode === 'day') {
+      buildDayView(scheduled);
+      syncTimetableModeControls();
       return;
     }
 
@@ -2063,7 +2129,9 @@
     var table = createEl('div', 'tt');
     // 每道至少 48px（块左右各留 2px 内缩后仍有 44px 可点）。
     // 只在宽屏生效：手机上列宽固定 88px，否则一屏放不下几列。
-    table.style.setProperty('--tt-col-min-wide', Math.max(88, maxLanes * 48) + 'px');
+    // 这两个数交给 applyTimetableColumnFit() 折算成宽屏的 --tt-col-fit（见该函数）。
+    ttWideColMin = Math.max(88, maxLanes * 48);
+    ttMaxLanes = maxLanes;
 
     // 表头行（整行 sticky 顶部）：左上角 + 7 个星期
     var headRow = createEl('div', 'tt__row tt__row--head');
@@ -2140,6 +2208,582 @@
     table.appendChild(bodyRow);
 
     timetableScrollEl.appendChild(table);
+    applyTimetableColumnFit();
+    syncTimetableModeControls();
+    syncWeekScrollState();
+  }
+
+  /**
+   * 宽屏列宽的自适应：只在「差几个像素就能铺满」时才铺满，否则老实接受横滑。
+   *
+   * 为什么需要：768 宽的窗口里容器内宽 688，而 7×88 + 76 = 692 —— 恒差 4px。
+   * 结果就是第 7 列被裁掉几个像素、`scrollWidth - clientWidth > 2` 成立，
+   * 于是顺带弹出「左右滑动查看整周」——用 4px 的溢出骗用户去滑动。
+   *
+   * 做法：算出「7 列刚好铺满」的列宽（`--tt-col-fit`），但**只在它接近整周下限
+   * （88px）时**才采用；偏离太多（640 的 73px、700 的 82px）就回落到 88px 接受横滑 ——
+   * 横滑至少信息完整，把列压窄会让「08:30–10:00」变省略号、课名被裁行，比横滑更糟。
+   *
+   * 另一条边界：当天有多门课时间重叠、需要并排分道时，列宽不能被压到每道不足 44px
+   * 的可点宽度（`.tt-block` 左右各内缩 2px，所以一道要 48px 才有 44px 的块）。
+   * 这种"物理上放不下"的情况宁可横滑（提示是诚实的），也不做假适配。
+   */
+  function applyTimetableColumnFit() {
+    if (!timetableScrollEl) {
+      return;
+    }
+    var table = timetableScrollEl.querySelector('.tt');
+    if (!table) {
+      return;
+    }
+    var axisEl = timetableScrollEl.querySelector('.tt__axis');
+    var axisWidth = axisEl ? axisEl.getBoundingClientRect().width : 0;
+    var available = timetableScrollEl.clientWidth - axisWidth;
+    if (!(available > 0)) {
+      return;
+    }
+    var fit = Math.floor(available / 7);
+    if (!(fit > 0)) {
+      return;
+    }
+    // 一道 48px（块左右各内缩 2px 后才剩 44px 的可点宽度）；
+    // 再 +2px 余量吸收两个亚像素损耗：① 列自己的 1px 左边框（`.tt__col` 是 border-box，
+    // 块宽按列内容宽算）；② `width: calc(33.3333% - 4px)` 的百分比截断。
+    // 只 +1 时三道并排实测 43.98px，差 0.02px 就不达标。
+    var tapFloor = Math.max(TAP_MIN_PX, ttMaxLanes * (TAP_MIN_PX + 4) + 2);
+    // 只有差 ≤4px 才铺满；差得多说明这个宽度根本放不下 7 列，回落 88px 走横滑
+    var effective = fit >= ttWideColMin - 4 ? Math.min(ttWideColMin, fit) : ttWideColMin;
+    if (effective < tapFloor) {
+      effective = tapFloor;
+    }
+    table.style.setProperty('--tt-col-fit', effective + 'px');
+  }
+
+  /* ==================== 七·二、手机端按天课表（整周 / 按天） ==================== */
+
+  /**
+   * 当前视口是否更该用「按天」：< 560px 视为窄屏。
+   * @return {boolean}
+   */
+  function prefersDayTimetable() {
+    if (typeof window.matchMedia !== 'function') {
+      return false;
+    }
+    try {
+      return window.matchMedia(TT_DAY_QUERY).matches;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  /**
+   * 按屏幕宽度取默认显示方式（只在首次进入、或用户没手动切换过时生效）。
+   * @return {'week'|'day'}
+   */
+  function defaultTimetableMode() {
+    return prefersDayTimetable() ? 'day' : 'week';
+  }
+
+  /**
+   * 保证 state.ttMode / state.ttDay 始终是合法值。
+   */
+  function ensureTimetableMode() {
+    if (state.ttMode !== 'week' && state.ttMode !== 'day') {
+      state.ttMode = defaultTimetableMode();
+    }
+    if (!(state.ttDay >= 1 && state.ttDay <= 7)) {
+      state.ttDay = todayWeekday();
+    }
+  }
+
+  /**
+   * 切换「整周 / 按天」。只改内存，不写 sections:v1、也不新增存储键。
+   * @param {'week'|'day'} mode
+   * @param {boolean} fromUser 是否由用户手动切换（是则 resize 不再覆盖）
+   */
+  function setTimetableMode(mode, fromUser) {
+    var next = mode === 'day' ? 'day' : 'week';
+    if (fromUser) {
+      state.ttModeUserSet = true;
+    }
+    if (next === state.ttMode) {
+      syncTimetableModeControls();
+      return;
+    }
+    state.ttMode = next;
+    if (next === 'day' && !(state.ttDay >= 1 && state.ttDay <= 7)) {
+      state.ttDay = todayWeekday();
+    }
+    if (next === 'week') {
+      // 切回整周时允许再自动定位一次今天列（用户手动滚过的除外）
+      ttAutoScrolled = false;
+    }
+    hideTtHint();
+    buildTimetable();
+    syncTimetableModeControls();
+    announce(next === 'day' ? '已切换到按天显示' : '已切换到整周显示');
+  }
+
+  /**
+   * 同步「整周 / 按天」分段控件与星期 chips。
+   */
+  function syncTimetableModeControls() {
+    var dayMode = state.ttMode === 'day';
+    if (ttModeWeekEl) {
+      if (dayMode) {
+        ttModeWeekEl.classList.remove('is-active');
+      } else {
+        ttModeWeekEl.classList.add('is-active');
+      }
+      ttModeWeekEl.setAttribute('aria-pressed', dayMode ? 'false' : 'true');
+    }
+    if (ttModeDayEl) {
+      if (dayMode) {
+        ttModeDayEl.classList.add('is-active');
+      } else {
+        ttModeDayEl.classList.remove('is-active');
+      }
+      ttModeDayEl.setAttribute('aria-pressed', dayMode ? 'true' : 'false');
+    }
+    if (ttDaysEl) {
+      ttDaysEl.hidden = !dayMode;
+    }
+    renderWeekdayChips();
+  }
+
+  /**
+   * 重建星期 chips（周一…周日）。
+   *
+   * - 今天：`aria-current="date"` + 小圆点（不靠颜色单独承载语义，读屏也会念「今天」）
+   * - 选中：aria-pressed=true + 实心样式
+   * - 重建时把焦点还给同一天的 chip，键盘用户不会因为重建而丢焦点
+   */
+  function renderWeekdayChips() {
+    if (!ttDaysEl) {
+      return;
+    }
+    var activeEl = document.activeElement;
+    var focusWeekday = 0;
+    if (activeEl && typeof ttDaysEl.contains === 'function' && ttDaysEl.contains(activeEl)) {
+      var rawDay = Number(activeEl.getAttribute('data-weekday'));
+      focusWeekday = rawDay >= 1 && rawDay <= 7 ? rawDay : 0;
+    }
+    // 方向键 / 点击换天时，焦点必须跟着走到"新的那天"（否则读屏还在念旧的那天）。
+    // pendingChipFocus 由 selectTimetableDay 写入，用一次就清掉。
+    if (ttPendingChipFocus >= 1 && ttPendingChipFocus <= 7) {
+      focusWeekday = ttPendingChipFocus;
+      ttPendingChipFocus = 0;
+    }
+    ttDaysEl.textContent = '';
+    if (state.ttMode !== 'day') {
+      return;
+    }
+    ensureTimetableMode();
+    var today = todayWeekday();
+    var focusTarget = null;
+    for (var day = 1; day <= 7; day += 1) {
+      var chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'tt-day-chip';
+      chip.setAttribute('data-weekday', String(day));
+      chip.textContent = WEEKDAY_LABELS[day - 1];
+      var selected = day === state.ttDay;
+      if (selected) {
+        chip.classList.add('is-selected');
+      }
+      chip.setAttribute('aria-pressed', selected ? 'true' : 'false');
+      if (day === today) {
+        chip.classList.add('is-today');
+        chip.setAttribute('aria-current', 'date');
+      }
+      chip.setAttribute(
+        'aria-label',
+        WEEKDAY_LABELS[day - 1] + (day === today ? '，今天' : '')
+      );
+      ttDaysEl.appendChild(chip);
+      if (day === focusWeekday) {
+        focusTarget = chip;
+      }
+    }
+    if (focusTarget) {
+      safeFocus(focusTarget);
+    }
+  }
+
+  /**
+   * 按天模式选择某一天。
+   * @param {number} weekday 1-7
+   */
+  function selectTimetableDay(weekday) {
+    var day = Number(weekday);
+    if (!(day >= 1 && day <= 7)) {
+      return;
+    }
+    if (day === state.ttDay) {
+      syncTimetableModeControls();
+      return;
+    }
+    state.ttDay = day;
+    // chips 会被重建，先记下"焦点应该落在哪天"，重建时再还给新 chip
+    ttPendingChipFocus = day;
+    buildTimetable();
+    syncTimetableModeControls();
+    announce('已切换到' + WEEKDAY_LABELS[day - 1]);
+  }
+
+  /**
+   * 显示方式分段的点击委托。
+   * @param {MouseEvent} event
+   */
+  function handleTimetableModeClick(event) {
+    var target = event.target;
+    if (!target || typeof target.closest !== 'function') {
+      return;
+    }
+    var button = target.closest('[data-tt-mode]');
+    if (!button) {
+      return;
+    }
+    setTimetableMode(button.getAttribute('data-tt-mode'), true);
+  }
+
+  /**
+   * 星期 chips 的点击委托。
+   * @param {MouseEvent} event
+   */
+  function handleTimetableDaysClick(event) {
+    var target = event.target;
+    if (!target || typeof target.closest !== 'function') {
+      return;
+    }
+    var chip = target.closest('.tt-day-chip[data-weekday]');
+    if (!chip) {
+      return;
+    }
+    selectTimetableDay(Number(chip.getAttribute('data-weekday')));
+  }
+
+  /**
+   * 星期 chips 的键盘操作：←/→ 前后一天，Home/End 跳到周一/周日。
+   * @param {KeyboardEvent} event
+   */
+  function handleTimetableDaysKeydown(event) {
+    var key = event.key;
+    var target = state.ttDay;
+    if (key === 'ArrowLeft' || key === 'Left') {
+      target = ((state.ttDay - 1 - 1 + 7) % 7) + 1;
+    } else if (key === 'ArrowRight' || key === 'Right') {
+      target = (state.ttDay % 7) + 1;
+    } else if (key === 'Home') {
+      target = 1;
+    } else if (key === 'End') {
+      target = 7;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    selectTimetableDay(target);
+  }
+
+  /**
+   * 创建「按天」视图里的一个课程块。
+   * 纵向堆叠（时间段 / 节次 / 课名 / 教师·地点 / 备注），不横向滚动、不做省略号截断。
+   * @param {Object} course
+   * @return {HTMLButtonElement}
+   */
+  function createDayCourseBlock(course) {
+    var pickedIndex = swapState.active ? swapState.picked.indexOf(course.id) : -1;
+
+    var block = document.createElement('button');
+    block.type = 'button';
+    block.className = 'td-block';
+    block.setAttribute('data-course-id', course.id);
+    applyCourseColor(block, course);
+    if (swapState.active) {
+      block.classList.add('is-swap-candidate');
+      block.setAttribute('aria-pressed', pickedIndex >= 0 ? 'true' : 'false');
+      if (pickedIndex >= 0) {
+        block.classList.add('is-swap-picked');
+      }
+    }
+
+    var timeText =
+      normalizeTimeString(course.startTime) + '–' + normalizeTimeString(course.endTime);
+    var periodStart = periodIndexByTime(course.startTime);
+    var periodCount = countCoursePeriods(course);
+    var periodText = '';
+    if (periodStart > 0) {
+      periodText =
+        periodCount > 1
+          ? '第' + periodStart + '–' + (periodStart + periodCount - 1) + '节'
+          : '第' + periodStart + '节';
+    }
+
+    var timeRow = createEl('span', 'td-block__time-row');
+    timeRow.appendChild(createEl('span', 'td-block__time', timeText));
+    if (periodText) {
+      timeRow.appendChild(createEl('span', 'td-block__period', periodText));
+    }
+    block.appendChild(timeRow);
+    block.appendChild(createEl('span', 'td-block__name', course.name));
+
+    var metaParts = [];
+    var teacher = typeof course.teacher === 'string' ? course.teacher.trim() : '';
+    if (teacher) {
+      metaParts.push(teacher);
+    }
+    var placeInfo = toPlaceInfo(course.place);
+    if (placeInfo) {
+      metaParts.push(placeInfo.text);
+    }
+    if (metaParts.length > 0) {
+      block.appendChild(createEl('span', 'td-block__meta', metaParts.join(' · ')));
+    }
+    var note = typeof course.note === 'string' ? course.note.trim() : '';
+    if (note) {
+      block.appendChild(createEl('span', 'td-block__note', note));
+    }
+
+    var weekdayText = WEEKDAY_LABELS[clampWeekday(course.weekday) - 1];
+    var ariaLabel = course.name + '，' + weekdayText + ' ' + timeText;
+    if (periodText) {
+      ariaLabel += '，' + periodText;
+    }
+    if (teacher) {
+      ariaLabel += '，' + teacher;
+    }
+    if (placeInfo) {
+      ariaLabel += '，' + placeInfo.text;
+    }
+    if (swapState.active) {
+      ariaLabel +=
+        pickedIndex >= 0
+          ? '，已选为第 ' + (pickedIndex + 1) + ' 门，再次点击可取消选择'
+          : '，点击选择用于互换';
+    } else {
+      ariaLabel += '，查看课程详情';
+    }
+    block.setAttribute('aria-label', ariaLabel);
+    block.title = course.name + '  ' + timeText;
+
+    if (pickedIndex >= 0) {
+      block.appendChild(createEl('span', 'swap-pick-badge', String(pickedIndex + 1)));
+    }
+    return block;
+  }
+
+  /**
+   * 构建「按天」视图：顶部一行（周X + N 门 / N 节），下面是当天的课程纵向排列。
+   * @param {Array<Object>} scheduled 有有效时间的课程
+   */
+  function buildDayView(scheduled) {
+    if (!timetableScrollEl) {
+      return;
+    }
+    // 按天视图没有横向滚动：清掉整周模式的溢出装饰
+    timetableScrollEl.classList.remove('has-h-overflow');
+    timetableScrollEl.classList.remove('is-scroll-start');
+    timetableScrollEl.classList.remove('is-scroll-end');
+    ttLastScrollLeft = 0;
+    hideTtHint();
+
+    var day = state.ttDay;
+    var today = todayWeekday();
+    var dayCourses = [];
+    for (var i = 0; i < scheduled.length; i += 1) {
+      if (clampWeekday(scheduled[i].weekday) === day) {
+        dayCourses.push(scheduled[i]);
+      }
+    }
+    dayCourses.sort(function (a, b) {
+      var diff = timeToMinutes(a.startTime) - timeToMinutes(b.startTime);
+      if (diff !== 0) {
+        return diff;
+      }
+      return String(a.name).localeCompare(String(b.name), 'zh-Hans-CN');
+    });
+
+    var wrap = createEl('div', 'td');
+    var head = createEl('div', 'td__head');
+    var dayLabel = WEEKDAY_LABELS[day - 1] + (day === today ? ' · 今天' : '');
+    head.appendChild(createEl('span', 'td__day', dayLabel));
+    var periodTotal = 0;
+    for (var p = 0; p < dayCourses.length; p += 1) {
+      periodTotal += countCoursePeriods(dayCourses[p]);
+    }
+    head.appendChild(
+      createEl(
+        'span',
+        'td__count',
+        dayCourses.length === 0
+          ? '没有课'
+          : dayCourses.length + ' 门 · ' + periodTotal + ' 节'
+      )
+    );
+    wrap.appendChild(head);
+
+    if (dayCourses.length === 0) {
+      wrap.appendChild(
+        createEl('p', 'td__empty', day === today ? '今天没有课' : dayLabel + '没有课')
+      );
+      timetableScrollEl.appendChild(wrap);
+      return;
+    }
+
+    var list = createEl('div', 'td__list');
+    for (var k = 0; k < dayCourses.length; k += 1) {
+      list.appendChild(createDayCourseBlock(dayCourses[k]));
+    }
+    wrap.appendChild(list);
+    timetableScrollEl.appendChild(wrap);
+  }
+
+  /**
+   * 整周模式下的「两端渐隐 + 首次进入的一行提示 + 自动定位到今天列」。
+   */
+  function syncWeekScrollState() {
+    if (!timetableScrollEl) {
+      return;
+    }
+    var el = timetableScrollEl;
+    updateTimetableScrollMask();
+    var overflow = el.scrollWidth - el.clientWidth > 2;
+    if (!overflow) {
+      hideTtHint();
+      return;
+    }
+    // 自动定位到今天列：本次只做一次；用户手动滚过之后不再抢滚动
+    if (!ttAutoScrolled && !ttUserScrolled) {
+      ttAutoScrolled = true;
+      scrollToToday(true);
+      // 定位是同步完成的，立刻把滚动基线对齐并重算渐变：
+      // 这样首帧的两端渐隐就是对的，不必等浏览器派发 scroll 事件
+      // （等事件的话，第一眼看到的会是「右侧可滑」，而其实已经贴到右端了）。
+      ttLastScrollLeft = el.scrollLeft;
+      updateTimetableScrollMask();
+    }
+    if (!ttHintShown) {
+      showTtHint();
+    }
+  }
+
+  /**
+   * 按「这一侧是否还有内容」维护两端渐隐的状态类。
+   *
+   * `.has-h-overflow` 表示整体有溢出（保留给外部观察/调试用），
+   * `.is-scroll-start` / `.is-scroll-end` 表示已经贴到左 / 右端点，对应那一侧不再渐隐。
+   */
+  function updateTimetableScrollMask() {
+    var el = timetableScrollEl;
+    if (!el) {
+      return;
+    }
+    if (state.ttMode === 'day') {
+      el.classList.remove('has-h-overflow');
+      el.classList.remove('is-scroll-start');
+      el.classList.remove('is-scroll-end');
+      return;
+    }
+    var overflow = el.scrollWidth - el.clientWidth > 2;
+    if (overflow) {
+      el.classList.add('has-h-overflow');
+    } else {
+      el.classList.remove('has-h-overflow');
+    }
+    var atStart = el.scrollLeft <= 2;
+    var atEnd = !overflow || el.scrollLeft >= el.scrollWidth - el.clientWidth - 2;
+    if (atStart) {
+      el.classList.add('is-scroll-start');
+    } else {
+      el.classList.remove('is-scroll-start');
+    }
+    if (atEnd) {
+      el.classList.add('is-scroll-end');
+    } else {
+      el.classList.remove('is-scroll-end');
+    }
+  }
+
+  /**
+   * 显示「左右滑动查看整周」提示（本次会话只显示一次，8 秒后自动收起）。
+   */
+  function showTtHint() {
+    if (!ttHintEl) {
+      return;
+    }
+    ttHintShown = true;
+    ttHintEl.hidden = false;
+    if (ttHintTimerId !== null) {
+      window.clearTimeout(ttHintTimerId);
+    }
+    ttHintTimerId = window.setTimeout(function () {
+      ttHintTimerId = null;
+      hideTtHint();
+    }, TT_HINT_TIMEOUT_MS);
+  }
+
+  /**
+   * 收起「左右滑动查看整周」提示。
+   */
+  function hideTtHint() {
+    if (ttHintTimerId !== null) {
+      window.clearTimeout(ttHintTimerId);
+      ttHintTimerId = null;
+    }
+    if (ttHintEl) {
+      ttHintEl.hidden = true;
+    }
+  }
+
+  /**
+   * 课表横向滚动：更新渐隐、记录「用户手动滚过」。
+   */
+  function handleTimetableScroll() {
+    var el = timetableScrollEl;
+    if (!el) {
+      return;
+    }
+    if (Math.abs(el.scrollLeft - ttLastScrollLeft) > 2) {
+      // 自动定位（scrollToToday）会先把 ttLastScrollLeft 对齐，
+      // 所以这里只要位置变了，就是用户自己滚的
+      ttUserScrolled = true;
+    }
+    ttLastScrollLeft = el.scrollLeft;
+    updateTimetableScrollMask();
+  }
+
+  /**
+   * 视口变化：用户没手动选过显示方式时，按宽度重新取默认值。
+   */
+  function handleViewportChange() {
+    var nextDefault = defaultTimetableMode();
+    if (!state.ttModeUserSet && nextDefault !== state.ttMode) {
+      state.ttMode = nextDefault;
+      if (state.view === 'grid' && state.courses.length > 0) {
+        buildTimetable();
+      } else {
+        syncTimetableModeControls();
+      }
+      return;
+    }
+    if (state.view === 'grid') {
+      // 窗口宽度一变，7 列的兜底宽度和两端渐隐都要重算
+      applyTimetableColumnFit();
+      updateTimetableScrollMask();
+    }
+  }
+
+  /**
+   * 防抖后执行 handleViewportChange（缩放窗口时 resize 会连续触发几十次）。
+   */
+  function scheduleViewportChange() {
+    if (ttResizeTimerId !== null) {
+      window.clearTimeout(ttResizeTimerId);
+    }
+    ttResizeTimerId = window.setTimeout(function () {
+      ttResizeTimerId = null;
+      handleViewportChange();
+    }, 150);
   }
 
   /* ==================== 八、今天信息条 / 更多菜单 ==================== */
@@ -2223,7 +2867,13 @@
   }
 
   /**
-   * 启动「今天」信息条的 60s 定时刷新。
+   * 启动「今天」信息条 / 今日面板的 60s 定时刷新。
+   *
+   * 定时器同时负责两件事：
+   *   ① 「今天 N 节 · 正在上 …」信息条的分钟数；
+   *   ② 今日面板里「进行中」徽章的判定 —— 面板开着跨过上下课时间时，
+   *      不刷新就会一直显示过期状态。
+   * 因此只要「信息条可见」**或**「面板开着」就必须跑（见 syncTodayTimer）。
    */
   function startTodayTimer() {
     if (todayTimerId !== null) {
@@ -2236,6 +2886,9 @@
         return;
       }
       renderTodayBar();
+      if (isTodayPanelOpen()) {
+        refreshTodayPanel();
+      }
     }, TODAY_REFRESH_MS);
   }
 
@@ -2251,16 +2904,36 @@
   }
 
   /**
+   * 「今天」信息条是否该显示（信息条与定时器共用这一个判定）。
+   * @return {boolean}
+   */
+  function isTodayBarVisible() {
+    return state.courses.length > 0 && state.view === 'grid';
+  }
+
+  /**
+   * 按需启停 60s 定时器：信息条可见 或 今日面板开着 时都要跑。
+   */
+  function syncTodayTimer() {
+    if (isTodayBarVisible() || isTodayPanelOpen()) {
+      startTodayTimer();
+      return;
+    }
+    stopTodayTimer();
+  }
+
+  /**
    * 渲染「今天」信息条：只在课表视图且有课程时显示。
    */
   function renderTodayBar() {
     if (!todayBarEl || !todayBarTextEl) {
       return;
     }
-    var visible = state.courses.length > 0 && state.view === 'grid';
+    var visible = isTodayBarVisible();
     todayBarEl.hidden = !visible;
     if (!visible) {
-      stopTodayTimer();
+      // 信息条藏起来，但面板可能正开着（任务栏目也能打开面板），定时器不能一刀切停掉
+      syncTodayTimer();
       return;
     }
     var info = buildTodayBarText();
@@ -2270,20 +2943,415 @@
     } else {
       todayBarEl.removeAttribute('data-course-id');
     }
-    startTodayTimer();
+    syncTodayTimer();
   }
 
   /**
-   * 点击「今天」信息条：滚到今天列，并高亮下一节课。
+   * 点击「今天」信息条：打开今日面板（当日课程 + 当日任务）。
+   * 以前这里只把课表滚到今天那一列，信息量太低——用户真正要的是「今天上什么、还要做什么」。
    */
   function handleTodayBarClick() {
     if (state.view !== 'grid') {
       setView('grid');
     }
-    scrollToToday();
-    var courseId = todayBarEl ? todayBarEl.getAttribute('data-course-id') : '';
-    if (courseId) {
-      highlightCourse(courseId);
+    openTodayPanel(todayBarEl);
+  }
+
+  /* ==================== 八·二、今日面板（当日课程 + 当日任务） ==================== */
+
+  /**
+   * 今日面板的标题：「今天 · 11月28日 周六」，按当天实时生成。
+   * 日期文案复用 sections.js 的实现（与任务栏目同一套），不另造一份。
+   * @return {string}
+   */
+  function buildTodayPanelTitle() {
+    var today = typeof SEC.todayString === 'function' ? SEC.todayString() : '';
+    var parts = [];
+    if (typeof SEC.formatDateLabel === 'function') {
+      var dateLabel = SEC.formatDateLabel(today);
+      if (dateLabel) {
+        parts.push(dateLabel);
+      }
+    }
+    if (typeof SEC.weekdayCn === 'function') {
+      var weekdayLabel = SEC.weekdayCn(today);
+      if (weekdayLabel) {
+        parts.push(weekdayLabel);
+      }
+    }
+    return parts.length > 0 ? '今天 · ' + parts.join(' ') : '今天';
+  }
+
+  /**
+   * 今日任务：「今天」这一天的任务，未完成在前、已完成置底。
+   *
+   * 数据来源就是任务栏目那一份 `state.tasks`（用同一个 filterTasksByDate 过滤），
+   * 不另建读取逻辑——面板勾选后任务栏目的界面与存储会同步变化。
+   *
+   * 排序（与「任务」栏目的 groupTasks 保持同一套语义，否则同一份数据两处顺序不一致）：
+   *   ① 未完成在前、已完成置底；
+   *   ② 未完成组内按 startTime 升序，没有时间的排在有时刻的后面；
+   *   ③ 已完成组内按 doneAt 降序（刚勾选的排在最后），doneAt 相同再看 updatedAt
+   *      —— 与 sections.js 的 doneSort 完全一致。
+   * @return {Array<Object>}
+   */
+  function todayTaskList() {
+    var today = typeof SEC.todayString === 'function' ? SEC.todayString() : '';
+    var source =
+      typeof SEC.filterTasksByDate === 'function'
+        ? SEC.filterTasksByDate(state.tasks, today)
+        : [];
+    var list = source.slice();
+    list.sort(function (a, b) {
+      var aDone = Boolean(a && a.done);
+      var bDone = Boolean(b && b.done);
+      if (aDone !== bDone) {
+        return aDone ? 1 : -1;
+      }
+      if (aDone && bDone) {
+        // 已完成：与任务栏目同序（doneAt 降序 → 刚完成的在最后一行）
+        var doneDiff = Number(b.doneAt || 0) - Number(a.doneAt || 0);
+        if (doneDiff !== 0) {
+          return doneDiff;
+        }
+        return Number(b.updatedAt || 0) - Number(a.updatedAt || 0);
+      }
+      var aMinute = timeToMinutes(a && a.startTime);
+      var bMinute = timeToMinutes(b && b.startTime);
+      if (aMinute !== bMinute) {
+        // 没有时间的（-1）排在有时刻的后面
+        if (aMinute < 0) {
+          return 1;
+        }
+        if (bMinute < 0) {
+          return -1;
+        }
+        return aMinute - bMinute;
+      }
+      return 0;
+    });
+    return list;
+  }
+
+  /**
+   * 今日面板是否开着。
+   * @return {boolean}
+   */
+  function isTodayPanelOpen() {
+    return Boolean(todayOverlayEl && !todayOverlayEl.hidden);
+  }
+
+  /**
+   * 创建「今日课程」里的一行：时间 + 课名（+ 进行中标记）+ 教师 / 地点。
+   * 「进行中」用文字标记，不让颜色单独承载语义。
+   * @param {Object} course
+   * @param {number} nowMinute 当前时刻的分钟数
+   * @return {HTMLLIElement}
+   */
+  function createTodayCourseRow(course, nowMinute) {
+    var row = createEl('li', 'today-item');
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'today-course';
+    button.setAttribute('data-course-id', course.id);
+
+    var timeText =
+      normalizeTimeString(course.startTime) + '–' + normalizeTimeString(course.endTime);
+    var startMinute = timeToMinutes(course.startTime);
+    var endMinute = timeToMinutes(course.endTime);
+    var running =
+      startMinute >= 0 && endMinute > startMinute && startMinute <= nowMinute && nowMinute < endMinute;
+
+    button.appendChild(createEl('span', 'today-course__time', timeText));
+
+    var body = createEl('span', 'today-course__body');
+    var nameRow = createEl('span', 'today-course__name-row');
+    nameRow.appendChild(createEl('span', 'today-course__name', course.name));
+    if (running) {
+      nameRow.appendChild(createEl('span', 'today-course__badge', '进行中'));
+    }
+    body.appendChild(nameRow);
+
+    var metaParts = [];
+    var teacher = typeof course.teacher === 'string' ? course.teacher.trim() : '';
+    if (teacher) {
+      metaParts.push(teacher);
+    }
+    var placeInfo = toPlaceInfo(course.place);
+    if (placeInfo) {
+      metaParts.push(placeInfo.text);
+    }
+    if (metaParts.length > 0) {
+      body.appendChild(createEl('span', 'today-course__meta', metaParts.join(' · ')));
+    }
+    button.appendChild(body);
+
+    button.setAttribute(
+      'aria-label',
+      course.name + '，' + timeText + (running ? '，正在进行' : '') + '，查看课程详情'
+    );
+    row.appendChild(button);
+    return row;
+  }
+
+  /**
+   * 创建「今日任务」里的一行：勾选框 + 标题 + 时间（有 startTime 才显示）。
+   * 勾选框复用任务栏目那套 `.row__check`（24px 视觉 + 44px 命中区 + aria-checked）。
+   * @param {Object} task
+   * @return {HTMLLIElement}
+   */
+  function createTodayTaskRow(task) {
+    var row = createEl('li', 'today-task');
+    row.setAttribute('data-task-id', task.id);
+    if (task.done) {
+      row.classList.add('is-done');
+    }
+
+    var check = document.createElement('button');
+    check.type = 'button';
+    check.className = 'row__check today-task__check';
+    check.setAttribute('role', 'checkbox');
+    check.setAttribute('aria-checked', task.done ? 'true' : 'false');
+    check.setAttribute(
+      'aria-label',
+      (task.done ? '取消完成：' : '标记完成：') + task.title
+    );
+    check.setAttribute('data-task-id', task.id);
+    check.appendChild(createIcon('icon-check'));
+    row.appendChild(check);
+
+    row.appendChild(createEl('span', 'today-task__title', task.title));
+
+    var timeText = normalizeTimeString(task.startTime);
+    if (timeText) {
+      row.appendChild(createEl('span', 'today-task__time', timeText));
+    }
+    return row;
+  }
+
+  /**
+   * 构建「今日课程」整段（含空态）。
+   * @return {HTMLElement}
+   */
+  function buildTodayCourseSection() {
+    var section = createEl('section', 'today-sec');
+    section.setAttribute('aria-labelledby', 'today-courses-title');
+    var head = createEl('div', 'today-sec__head');
+    var title = createEl('h3', 'today-sec__title', '今日课程');
+    title.id = 'today-courses-title';
+    head.appendChild(title);
+    section.appendChild(head);
+
+    var list = todayCourses();
+    if (list.length === 0) {
+      section.appendChild(createEl('p', 'today-empty', '今天没有课'));
+      return section;
+    }
+    var nowMinute = nowMinutes();
+    var ul = createEl('ul', 'today-list');
+    for (var i = 0; i < list.length; i += 1) {
+      ul.appendChild(createTodayCourseRow(list[i], nowMinute));
+    }
+    section.appendChild(ul);
+    return section;
+  }
+
+  /**
+   * 构建「今日任务」整段（含空态）。
+   * @return {HTMLElement}
+   */
+  function buildTodayTaskSection() {
+    var section = createEl('section', 'today-sec');
+    section.setAttribute('aria-labelledby', 'today-tasks-title');
+    var head = createEl('div', 'today-sec__head');
+    var title = createEl('h3', 'today-sec__title', '今日任务');
+    title.id = 'today-tasks-title';
+    head.appendChild(title);
+    section.appendChild(head);
+
+    var list = todayTaskList();
+    if (list.length === 0) {
+      section.appendChild(createEl('p', 'today-empty', '今天没有任务'));
+      return section;
+    }
+    var ul = createEl('ul', 'today-list');
+    for (var i = 0; i < list.length; i += 1) {
+      ul.appendChild(createTodayTaskRow(list[i]));
+    }
+    section.appendChild(ul);
+    return section;
+  }
+
+  /**
+   * 渲染今日面板内容（标题 + 今日课程 + 今日任务）。
+   * 面板每次打开都重建，面板打开期间的数据变化（勾选 / 编辑 / 删除）也会重建。
+   */
+  function renderTodayPanel() {
+    if (!todayBodyEl) {
+      return;
+    }
+    if (todayTitleEl) {
+      todayTitleEl.textContent = buildTodayPanelTitle();
+    }
+    todayBodyEl.textContent = '';
+    todayBodyEl.appendChild(buildTodayCourseSection());
+    todayBodyEl.appendChild(buildTodayTaskSection());
+  }
+
+  /**
+   * 重建面板内容，并把焦点还给"重建前所在的那一行"。
+   *
+   * 60s 定时刷新（「进行中」徽章会随上下课变化）和面板打开期间的增删改都会走到这里，
+   * 如果只是 renderTodayPanel()，键盘 / 读屏用户正在操作的那一行会被抽走，
+   * 焦点掉回 BODY。因此先记下 data-task-id / data-course-id，重建后再找回来。
+   */
+  function refreshTodayPanel() {
+    if (!isTodayPanelOpen() || !todayBodyEl) {
+      return;
+    }
+    var active = document.activeElement;
+    var focusType = '';
+    var focusId = '';
+    if (active && typeof active.getAttribute === 'function' && todayBodyEl.contains(active)) {
+      var taskId = active.getAttribute('data-task-id');
+      var courseId = active.getAttribute('data-course-id');
+      if (taskId) {
+        focusType = 'task';
+        focusId = taskId;
+      } else if (courseId) {
+        focusType = 'course';
+        focusId = courseId;
+      }
+    }
+    renderTodayPanel();
+    if (focusType === 'task') {
+      focusTodayTaskCheck(focusId);
+      return;
+    }
+    if (focusType === 'course') {
+      focusTodayCourse(focusId);
+    }
+  }
+
+  /**
+   * 把焦点放回今日面板里某条任务的勾选框（勾选后重建面板不会丢焦点）。
+   * @param {string} taskId
+   */
+  function focusTodayTaskCheck(taskId) {
+    if (!todayBodyEl || !taskId) {
+      return;
+    }
+    var checks = todayBodyEl.querySelectorAll('.today-task__check[data-task-id]');
+    for (var i = 0; i < checks.length; i += 1) {
+      if (checks[i].getAttribute('data-task-id') === taskId) {
+        safeFocus(checks[i]);
+        return;
+      }
+    }
+    safeFocus(todayCloseEl || todaySheetEl);
+  }
+
+  /**
+   * 把焦点放回今日面板里某一门课的行（面板刷新后不丢焦点）。
+   * @param {string} courseId
+   */
+  function focusTodayCourse(courseId) {
+    if (!todayBodyEl || !courseId) {
+      return;
+    }
+    var rows = todayBodyEl.querySelectorAll('.today-course[data-course-id]');
+    for (var i = 0; i < rows.length; i += 1) {
+      if (rows[i].getAttribute('data-course-id') === courseId) {
+        safeFocus(rows[i]);
+        return;
+      }
+    }
+    safeFocus(todayCloseEl || todaySheetEl);
+  }
+
+  /**
+   * 打开今日面板。
+   * @param {HTMLElement|null} trigger 关闭后焦点归还到这个元素
+   */
+  function openTodayPanel(trigger) {
+    if (!todayOverlayEl || !todaySheetEl) {
+      return;
+    }
+    if (todayOverlayEl.classList.contains('is-open')) {
+      return;
+    }
+    lastTodayTrigger = trigger || null;
+    renderTodayPanel();
+    showOverlay(todayOverlayEl);
+    pushDialog(todaySheetEl, function () {
+      closeTodayPanel(true);
+    });
+    lockBodyScroll();
+    // 面板在任务栏目也能打开（那里没有「今天」信息条），定时器要跟着起来，
+    // 否则「进行中」徽章不会随时间更新
+    syncTodayTimer();
+    window.setTimeout(
+      function () {
+        if (!todayOverlayEl.classList.contains('is-open')) {
+          return;
+        }
+        safeFocus(todayCloseEl || todaySheetEl);
+      },
+      prefersReducedMotion() ? 0 : 60
+    );
+  }
+
+  /**
+   * 关闭今日面板。
+   * @param {boolean} restoreFocus 关闭后焦点是否回到触发元素
+   */
+  function closeTodayPanel(restoreFocus) {
+    if (!todayOverlayEl || todayOverlayEl.hidden) {
+      return;
+    }
+    popDialog(todaySheetEl);
+    hideOverlay(todayOverlayEl);
+    unlockBodyScroll();
+    if (dialogStack.length === 0 && scrollLockDepth !== 0) {
+      scrollLockDepth = 0;
+      releaseBodyScroll();
+    }
+    syncTodayTimer();
+    var trigger = lastTodayTrigger;
+    lastTodayTrigger = null;
+    if (restoreFocus) {
+      restoreFocusAfterDialog(trigger);
+    }
+  }
+
+  /**
+   * 今日面板的事件委托：课程行 → 打开课程详情；任务勾选框 → 切换完成态。
+   * @param {MouseEvent} event
+   */
+  function handleTodayPanelClick(event) {
+    var target = event.target;
+    if (!target || typeof target.closest !== 'function') {
+      return;
+    }
+    var courseButton = target.closest('.today-course[data-course-id]');
+    if (courseButton) {
+      var courseId = courseButton.getAttribute('data-course-id');
+      if (courseId) {
+        openDetail(courseId, courseButton);
+      }
+      return;
+    }
+    var check = target.closest('.today-task__check[data-task-id]');
+    if (check) {
+      var taskId = check.getAttribute('data-task-id');
+      if (!taskId) {
+        return;
+      }
+      // 复用任务栏目的那条路径：写库（persistTasks）+ 全量 render()，
+      // render() 里会把打开着的今日面板一起重建（见 render 第 0 步），任务栏目同步
+      toggleTaskDone(taskId);
+      // toggleTaskDone 内部会把焦点落到任务栏目那边，这里把焦点拉回面板里同一行的勾选框
+      focusTodayTaskCheck(taskId);
     }
   }
 
@@ -2577,6 +3645,13 @@
     var courseView = isCourseView();
     var isEmpty = state.courses.length === 0;
 
+    // 0) 今日面板开着的时候，课程 / 任务的增删改要同步进去（否则面板还显示旧数据）。
+    //    放在最前面，后面所有分支的提前 return 都不会漏掉这一步。
+    //    refreshTodayPanel 会把焦点还给重建前所在的那一行。
+    if (isTodayPanelOpen()) {
+      refreshTodayPanel();
+    }
+
     // 1) 栏目外壳：标题 / 副标题 / 添加按钮 / 相机 / 更多 / 日期条 / data-view / document.title
     applySectionChrome();
 
@@ -2700,8 +3775,10 @@
     }
     // 菜单项按栏目显隐（用单条 hidden，不整颗藏菜单，键盘导航会自动跳过）
     if (btnTodayEl) {
-      // 「今天」只在课表视图且确实有课程时可点
-      btnTodayEl.hidden = !(view === 'grid' && state.courses.length > 0);
+      // 「今天」打开今日面板（当日课程 + 当日任务）。
+      // 面板是「今天」的聚合视图，任务栏目里更需要它，因此只在
+      // 清单 / 旅游（这两个栏目没有"今天"这个维度）时隐藏。
+      btnTodayEl.hidden = view === 'list' || view === 'trips';
     }
     if (btnSwapEl) {
       btnSwapEl.hidden = !isCourseView(view);
@@ -2954,7 +4031,7 @@
   /**
    * 横向滚动定位到「今天」那一列。
    */
-  function scrollToToday() {
+  function scrollToToday(instant) {
     if (!timetableScrollEl) {
       return;
     }
@@ -2970,11 +4047,13 @@
       timetableScrollEl.scrollLeft + (columnRect.left - containerRect.left) - axisWidth - 8;
     var maxScroll = Math.max(0, timetableScrollEl.scrollWidth - timetableScrollEl.clientWidth);
     target = Math.max(0, Math.min(target, maxScroll));
+    // instant：刚建好的课表要在首帧就定位到今天列（平滑滚动会让用户看到"跳一下"）
+    if (instant || prefersReducedMotion()) {
+      timetableScrollEl.scrollLeft = target;
+      return;
+    }
     try {
-      timetableScrollEl.scrollTo({
-        left: target,
-        behavior: prefersReducedMotion() ? 'auto' : 'smooth'
-      });
+      timetableScrollEl.scrollTo({ left: target, behavior: 'smooth' });
     } catch (err) {
       timetableScrollEl.scrollLeft = target;
     }
@@ -3006,7 +4085,7 @@
     if (!timetableScrollEl) {
       return null;
     }
-    var blocks = timetableScrollEl.querySelectorAll('.tt-block[data-course-id]');
+    var blocks = timetableScrollEl.querySelectorAll('.tt-block[data-course-id], .td-block[data-course-id]');
     for (var i = 0; i < blocks.length; i += 1) {
       if (blocks[i].getAttribute('data-course-id') === courseId) {
         return blocks[i];
@@ -3257,7 +4336,8 @@
       catalogOverlayEl,
       importOverlayEl,
       logOverlayEl,
-      confirmOverlayEl
+      confirmOverlayEl,
+      todayOverlayEl
     ];
     for (var i = 0; i < overlays.length; i += 1) {
       var overlay = overlays[i];
@@ -9694,6 +10774,19 @@
     todayBarEl = document.getElementById('today-bar');
     todayBarTextEl = document.getElementById('today-bar-text');
 
+    todayOverlayEl = document.getElementById('today-overlay');
+    todaySheetEl = document.getElementById('today-sheet');
+    todayTitleEl = document.getElementById('today-title');
+    todayBodyEl = document.getElementById('today-body');
+    todayCloseEl = document.getElementById('today-close');
+    todayDoneEl = document.getElementById('today-done');
+
+    ttModeEl = document.querySelector('.tt-mode');
+    ttModeWeekEl = document.getElementById('tt-mode-week');
+    ttModeDayEl = document.getElementById('tt-mode-day');
+    ttDaysEl = document.getElementById('tt-days');
+    ttHintEl = document.getElementById('tt-hint');
+
     swapBarEl = document.getElementById('swap-bar');
     swapBarStatusEl = document.getElementById('swap-bar-status');
     swapBarDetailEl = document.getElementById('swap-bar-detail');
@@ -9926,7 +11019,8 @@
     if (!target || typeof target.closest !== 'function') {
       return;
     }
-    var block = target.closest('.tt-block');
+    // 整周模式是 .tt-block，按天模式是 .td-block；两者的点击语义一致
+    var block = target.closest('.tt-block, .td-block');
     if (!block) {
       return;
     }
@@ -10062,8 +11156,10 @@
     }
     if (btnTodayEl) {
       btnTodayEl.addEventListener('click', function () {
-        closeMoreMenu(true);
-        scrollToToday();
+        // 更多菜单是浮层入口，关闭后焦点回到「更多」按钮本身
+        var trigger = btnMoreEl || btnTodayEl;
+        closeMoreMenu(false);
+        openTodayPanel(trigger);
       });
     }
     // 拍照：主行动。桌面上 capture 被忽略，退化为文件选择器（不做 UA 分支）
@@ -10104,6 +11200,48 @@
     }
     if (todayBarEl) {
       todayBarEl.addEventListener('click', handleTodayBarClick);
+    }
+
+    // 今日面板：点课程打开详情，点勾选框切换完成态（事件委托）
+    if (todayBodyEl) {
+      todayBodyEl.addEventListener('click', handleTodayPanelClick);
+    }
+    if (todayCloseEl) {
+      todayCloseEl.addEventListener('click', function () {
+        closeTodayPanel(true);
+      });
+    }
+    if (todayDoneEl) {
+      todayDoneEl.addEventListener('click', function () {
+        closeTodayPanel(true);
+      });
+    }
+
+    // 课表显示方式（整周 / 按天）+ 星期 chips
+    if (ttModeEl) {
+      ttModeEl.addEventListener('click', handleTimetableModeClick);
+    }
+    if (ttDaysEl) {
+      ttDaysEl.addEventListener('click', handleTimetableDaysClick);
+      ttDaysEl.addEventListener('keydown', handleTimetableDaysKeydown);
+    }
+    if (timetableScrollEl) {
+      timetableScrollEl.addEventListener('scroll', handleTimetableScroll, { passive: true });
+    }
+    // 视口变化：用户没手动选过显示方式时按宽度重新取默认值（防抖 150ms）
+    window.addEventListener('resize', scheduleViewportChange);
+    // 部分浏览器旋转屏幕时只发 matchMedia 的 change、不发 resize，两条都接上更稳
+    if (typeof window.matchMedia === 'function') {
+      try {
+        var modeQuery = window.matchMedia(TT_DAY_QUERY);
+        if (modeQuery && typeof modeQuery.addEventListener === 'function') {
+          modeQuery.addEventListener('change', scheduleViewportChange);
+        } else if (modeQuery && typeof modeQuery.addListener === 'function') {
+          modeQuery.addListener(scheduleViewportChange);
+        }
+      } catch (err) {
+        /* 老环境不支持监听视口查询时，只靠 resize 兜底 */
+      }
     }
 
     // 互换模式
@@ -10701,19 +11839,40 @@
       renderTodayBar();
     });
 
-    // 其它标签页改了课程键：重读存储并刷新界面（含目录行状态）。
+    // 其它标签页改了课程 / 任务 / 行程键：重读存储并刷新界面（含目录行状态）。
     // 这里**只读不写**：storage 事件在回环里再写库会互相触发，形成写风暴。
+    // key === null 表示 clear()，三份数据一起重读。
     window.addEventListener('storage', function (event) {
-      // key === null 表示 clear()，同样要重读
-      if (event && event.key !== null && event.key !== STORAGE_KEY) {
+      var key = event ? event.key : null;
+      var allCleared = key === null;
+      if (!allCleared && key !== STORAGE_KEY && key !== TASKS_STORAGE_KEY && key !== TRIPS_STORAGE_KEY) {
         return;
       }
-      var loaded = readStore();
-      state.courses = loaded.courses;
-      if (loaded.notice) {
-        showNotice(loaded.notice);
+      // 课程：沿用原有的读档 + 目录状态同步
+      if (allCleared || key === STORAGE_KEY) {
+        var loaded = readStore();
+        state.courses = loaded.courses;
+        if (loaded.notice) {
+          showNotice(loaded.notice);
+        }
+        syncCatalogAfterExternalChange();
       }
-      syncCatalogAfterExternalChange();
+      // 任务 / 行程：必须走 sections.js 的读取路径（校验 + 损坏兜底都在那里），
+      // 不在 app.js 里自己拼 JSON.parse
+      if ((allCleared || key === TASKS_STORAGE_KEY) && typeof SEC.readTasks === 'function') {
+        var tasksResult = SEC.readTasks();
+        state.tasks = Array.isArray(tasksResult.list) ? tasksResult.list : [];
+        if (tasksResult.notice) {
+          showNotice(tasksResult.notice);
+        }
+      }
+      if ((allCleared || key === TRIPS_STORAGE_KEY) && typeof SEC.readTrips === 'function') {
+        var tripsResult = SEC.readTrips();
+        state.trips = Array.isArray(tripsResult.list) ? tripsResult.list : [];
+        if (tripsResult.notice) {
+          showNotice(tripsResult.notice);
+        }
+      }
       render();
     });
 
@@ -10785,6 +11944,10 @@
     updateRingtoneMenuLabel();
     updateNotifyMenuItem();
     updateViewTabs();
+    // 课表显示方式：按屏幕宽度取默认值（窄屏按天 / 宽屏整周）。
+    // 只放内存，刷新后重新按宽度决定，不写 sections:v1、也不新增存储键。
+    state.ttMode = defaultTimetableMode();
+    state.ttDay = todayWeekday();
     render();
     startReminders();
     initNativeShell();

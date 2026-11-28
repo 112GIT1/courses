@@ -203,7 +203,8 @@
           <span class="btn-label">更多</span>
         </button>
         <div class="more-menu" id="more-menu" role="menu" aria-label="更多工具" hidden>
-          <button type="button" class="more-menu__item" id="btn-today" role="menuitem" aria-label="回到今天" title="回到今天">
+          <button type="button" class="more-menu__item" id="btn-today" role="menuitem"
+                  aria-label="今日面板" title="查看今天的课程与任务">
             <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-calendar"></use></svg>
             <span>今天</span>
           </button>
@@ -312,6 +313,21 @@
 
     <!-- 课表网格视图：结构由 app.js 通过 createElement 构建 -->
     <section class="timetable-view" id="timetable-view" hidden aria-label="课表网格">
+      <!-- 显示方式：整周（7 列网格）/ 按天（当天时间轴）。
+           窄屏默认「按天」—— 390px 只能容下 2.5 列，是手机端「看不全」的病根。
+           选中状态只放内存，刷新后按屏幕宽度重新取默认值（不写任何存储键）。 -->
+      <div class="tt-mode">
+        <div class="segmented segmented--tt" role="group" aria-label="课表显示方式">
+          <button type="button" class="segmented__btn is-active" id="tt-mode-week" data-tt-mode="week"
+                  aria-pressed="true">整周</button>
+          <button type="button" class="segmented__btn" id="tt-mode-day" data-tt-mode="day"
+                  aria-pressed="false">按天</button>
+        </div>
+      </div>
+      <!-- 星期 chips：只在「按天」出现，7 个等宽、可 Tab / 方向键切换 -->
+      <div class="tt-days" id="tt-days" role="group" aria-label="选择星期" hidden></div>
+      <!-- 整周模式首次进入且发生横向溢出时显示一行提示（不遮内容，可被读屏读到） -->
+      <p class="tt-hint" id="tt-hint" hidden>左右滑动查看整周</p>
       <div class="timetable" id="timetable" tabindex="-1" aria-label="课程表：纵向是节次，横向是星期"></div>
       <section class="unscheduled" id="unscheduled" hidden aria-labelledby="unscheduled-title">
         <h2 class="unscheduled__title" id="unscheduled-title">未设置时间</h2>
@@ -381,6 +397,25 @@
       <!-- 不设原生 disabled：原生 disabled 不派发 click，「只选 1 门点确认要有提示」就走不到。
            锁定态用 aria-disabled + .is-locked 表达，由 app.js 同步。 -->
       <button type="button" class="btn btn--primary btn--sm is-locked" id="swap-confirm" aria-disabled="true">确认互换</button>
+    </div>
+  </div>
+
+  <!-- ===== 今日面板：今天要上的课 + 今天要做的事（一个 sheet，不做第五个 tab） =====
+       放在课程详情之前：从面板点课程要能打开详情，详情必须盖在面板上面。 -->
+  <div class="overlay overlay--sheet" id="today-overlay" hidden>
+    <div class="sheet sheet--today" id="today-sheet" role="dialog" aria-modal="true" aria-labelledby="today-title">
+      <div class="sheet__grabber" aria-hidden="true"></div>
+      <div class="sheet__header">
+        <h2 class="sheet__title" id="today-title">今天</h2>
+        <button type="button" class="icon-btn" id="today-close" aria-label="关闭今日面板">
+          <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg>
+        </button>
+      </div>
+      <!-- 内容全部由 app.js 用 createElement + textContent 构建 -->
+      <div class="sheet__body" id="today-body"></div>
+      <div class="sheet__footer">
+        <button type="button" class="btn btn--primary" id="today-done">关闭</button>
+      </div>
     </div>
   </div>
 
